@@ -16,6 +16,7 @@ main() {
     local -a deps
     local kernel=
     local libgcc="libgcc-s1"
+    local ncurses=
 
     # select debian arch and kernel version
     case "${arch}" in
@@ -36,7 +37,8 @@ main() {
             libgcc="libgcc1"
             debsource="deb http://http.debian.net/debian/ buster main"
             debsource="${debsource}\ndeb http://security.debian.org/ buster/updates main"
-            kernel=4.19.0-14-4kc-malta
+            kernel=4.*-4kc-malta
+            ncurses="=6.1*"
             ;;
         mipsel)
             kernel="${kversion}-4kc-malta"
@@ -146,6 +148,17 @@ main() {
     mkdir -p "/qemu/${arch}"
     chmod 777 /qemu "/qemu/${arch}"
 
+    # Need to limit the kernel version and select the best version
+    # if we have a wildcard. This is because some matches, such as
+    # `linux-image-4.*-4kc-malta` can match more than 1 package,
+    # which will prevent further steps from working.
+    if [[ "$kernel" == *'*'* ]]; then
+        # Need an exact match for start and end, to avoid debug kernels.
+        packages=$(apt-cache search ^linux-image-"$kernel$" --names-only)
+        image=$(echo "$packages" | cut -d ' ' -f 1 | tail -n1)
+        kernel=${image#"linux-image-"}
+    fi
+
     cd "/qemu/${arch}"
     apt-get -d --no-install-recommends download \
         ${deps[@]+"${deps[@]}"} \
@@ -158,7 +171,7 @@ main() {
         "${libgcc}:${arch}" \
         "libstdc++6:${arch}" \
         "linux-image-${kernel}:${arch}" \
-        ncurses-base \
+        ncurses-base"${ncurses}" \
         "zlib1g:${arch}"
     cd /qemu
 
