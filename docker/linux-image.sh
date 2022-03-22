@@ -44,7 +44,7 @@ main() {
             kernel=5.*-4kc-malta
             ;;
         mips64el)
-            kernel="${kversion}-5kc-malta"
+            kernel=5.*-5kc-malta
             ;;
         powerpc)
             # there is no buster powerpc port, so we use jessie
