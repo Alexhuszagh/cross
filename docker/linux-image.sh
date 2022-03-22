@@ -122,7 +122,7 @@ main() {
             ;;
         s390x)
             arch=s390x
-            kernel="${kversion}-s390x"
+            kernel="5.*-s390x"
             ;;
         sparc64)
             # there is no stable port
