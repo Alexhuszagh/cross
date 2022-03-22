@@ -41,7 +41,7 @@ main() {
             ncurses="=6.1*"
             ;;
         mipsel)
-            kernel="${kversion}-4kc-malta"
+            kernel=5.*-4kc-malta
             ;;
         mips64el)
             kernel="${kversion}-5kc-malta"
