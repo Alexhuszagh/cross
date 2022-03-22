@@ -68,7 +68,7 @@ main() {
             ;;
         armv7)
             arch=armhf
-            kernel="${kversion}-armmp"
+            kernel="5.*-armmp"
             ;;
         i686)
             arch=i386
