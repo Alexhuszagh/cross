@@ -3,6 +3,48 @@
 set -x
 set -euo pipefail
 
+max_kernel_version() {
+    # kernel versions have the following format:
+    #   `5.10.0-10-$arch`, where the `$arch` may be optional.
+    local IFS=$'\n'
+    local -a versions
+    local major=0
+    local minor=0
+    local patch=0
+    local release=0
+    local index=0
+
+    read -r -d '' -a versions <<< "$1"
+    for i in "${!versions[@]}"; do
+        local version="${versions[$i]}"
+        local x=$(echo "$version" | cut -d '.' -f 1)
+        local y=$(echo "$version" | cut -d '.' -f 2)
+        local z=$(echo "$version" | cut -d '.' -f 3 | cut -d '-' -f 1)
+        local r=$(echo "$version" | cut -d '-' -f 2)
+        local is_larger=
+
+        if [ "$x" -gt "$major" ]; then
+            is_larger=1
+        elif [ "$x" -eq "$major" ] && [ "$y" -gt "$minor" ]; then
+            is_larger=1
+        elif [ "$x" -eq "$major" ] && [ "$y" -eq "$minor" ] && [ "$z" -gt "$patch" ]; then
+            is_larger=1
+        elif [ "$x" -eq "$major" ] && [ "$y" -eq "$minor" ] && [ "$z" -eq "$patch" ] && [ "$r" -gt "$release" ]; then
+            is_larger=1
+        fi
+
+        if [ -n "$is_larger" ]; then
+            index="$i"
+            major="$x"
+            minor="$y"
+            patch="$z"
+            release="$r"
+        fi
+    done
+
+    echo "${versions[index]}"
+}
+
 main() {
     # arch in the rust target
     local arch="${1}" \
@@ -67,9 +109,8 @@ main() {
             # there is no stable port
             arch=ppc64
             # https://packages.debian.org/en/sid/linux-image-powerpc64
-            kversion='5.*'
             libgcc="libgcc-s1"
-            kernel='*-powerpc64'
+            kernel='5.*-powerpc64'
             debsource="deb http://ftp.ports.debian.org/debian-ports unstable main"
             debsource="${debsource}\ndeb http://ftp.ports.debian.org/debian-ports unreleased main"
             # sid version of dropbear requires these dependencies
@@ -77,7 +118,7 @@ main() {
             ;;
         powerpc64le)
             arch=ppc64el
-            kernel="${kversion}-powerpc64le"
+            kernel="5.*-powerpc64le"
             ;;
         s390x)
             arch=s390x
@@ -154,9 +195,12 @@ main() {
     # which will prevent further steps from working.
     if [[ "$kernel" == *'*'* ]]; then
         # Need an exact match for start and end, to avoid debug kernels.
+        # Afterwards, need to do a complex sort for the best kernel version,
+        # since the sort is non-trivial and must extract subcomponents.
         packages=$(apt-cache search ^linux-image-"$kernel$" --names-only)
-        image=$(echo "$packages" | cut -d ' ' -f 1 | tail -n1)
-        kernel=${image#"linux-image-"}
+        names=$(echo "$packages" | cut -d ' ' -f 1)
+        versions=$(echo "$names" | sed -e "s/linux-image-//g")
+        kernel=$(max_kernel_version "$versions")
     fi
 
     cd "/qemu/${arch}"
