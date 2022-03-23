@@ -205,7 +205,7 @@ main() {
         # since the sort is non-trivial and must extract subcomponents.
         packages=$(apt-cache search ^linux-image-"$kernel$" --names-only)
         names=$(echo "$packages" | cut -d ' ' -f 1)
-        kversions=$(echo "$names" | sed -e "s/linux-image-//g")
+        kversions="${names//linux-image-/}"
         kernel=$(max_kernel_version "$kversions")
     fi
 
