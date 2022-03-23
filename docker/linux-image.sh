@@ -13,15 +13,21 @@ max_kernel_version() {
     local patch=0
     local release=0
     local index=0
+    local version
+    local x
+    local y
+    local z
+    local r
+    local is_larger
 
     read -r -d '' -a versions <<< "$1"
     for i in "${!versions[@]}"; do
-        local version="${versions[$i]}"
-        local x=$(echo "$version" | cut -d '.' -f 1)
-        local y=$(echo "$version" | cut -d '.' -f 2)
-        local z=$(echo "$version" | cut -d '.' -f 3 | cut -d '-' -f 1)
-        local r=$(echo "$version" | cut -d '-' -f 2)
-        local is_larger=
+        version="${versions[$i]}"
+        x=$(echo "$version" | cut -d '.' -f 1)
+        y=$(echo "$version" | cut -d '.' -f 2)
+        z=$(echo "$version" | cut -d '.' -f 3 | cut -d '-' -f 1)
+        r=$(echo "$version" | cut -d '-' -f 2)
+        is_larger=
 
         if [ "$x" -gt "$major" ]; then
             is_larger=1
@@ -79,14 +85,14 @@ main() {
             libgcc="libgcc1"
             debsource="deb http://http.debian.net/debian/ buster main"
             debsource="${debsource}\ndeb http://security.debian.org/ buster/updates main"
-            kernel=4.*-4kc-malta
+            kernel="4.*-4kc-malta"
             ncurses="=6.1*"
             ;;
         mipsel)
-            kernel=5.*-4kc-malta
+            kernel="5.*-4kc-malta"
             ;;
         mips64el)
-            kernel=5.*-5kc-malta
+            kernel="5.*-5kc-malta"
             ;;
         powerpc)
             # there is no buster powerpc port, so we use jessie
@@ -199,8 +205,8 @@ main() {
         # since the sort is non-trivial and must extract subcomponents.
         packages=$(apt-cache search ^linux-image-"$kernel$" --names-only)
         names=$(echo "$packages" | cut -d ' ' -f 1)
-        versions=$(echo "$names" | sed -e "s/linux-image-//g")
-        kernel=$(max_kernel_version "$versions")
+        kversions=$(echo "$names" | sed -e "s/linux-image-//g")
+        kernel=$(max_kernel_version "$kversions")
     fi
 
     cd "/qemu/${arch}"
