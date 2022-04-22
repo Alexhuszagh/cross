@@ -1,4 +1,4 @@
-use crate::{Result, Target, Toml};
+use crate::{CrossToml, Result, Target, TargetList};
 
 use crate::errors::*;
 use std::collections::HashMap;
@@ -24,11 +24,11 @@ impl Environment {
     }
 
     fn target_path(target: &Target, key: &str) -> String {
-        format!("TARGET_{}_{}", target.triple(), key)
+        format!("TARGET_{target}_{key}")
     }
 
     fn build_path(key: &str) -> String {
-        format!("BUILD_{}", key)
+        format!("BUILD_{key}")
     }
 
     fn get_build_var(&self, key: &str) -> Option<String> {
@@ -46,7 +46,7 @@ impl Environment {
         );
         let build_env = if let Some(value) = build_xargo {
             Some(value.parse::<bool>().wrap_err_with(|| {
-                format!("error parsing {} from XARGO environment variable", value)
+                format!("error parsing {value} from XARGO environment variable")
             })?)
         } else {
             None
@@ -78,6 +78,10 @@ impl Environment {
         self.get_values_for("ENV_VOLUMES", target)
     }
 
+    fn target(&self) -> Option<String> {
+        self.get_build_var("TARGET")
+    }
+
     fn get_values_for(
         &self,
         var: &str,
@@ -101,27 +105,46 @@ fn split_to_cloned_by_ws(string: &str) -> Vec<String> {
 
 #[derive(Debug)]
 pub struct Config {
-    toml: Option<Toml>,
+    toml: Option<CrossToml>,
     env: Environment,
 }
 
 impl Config {
-    pub fn new(toml: Option<Toml>) -> Self {
+    pub fn new(toml: Option<CrossToml>) -> Self {
         Config {
             toml,
             env: Environment::new(None),
         }
     }
 
+    pub fn confusable_target(&self, target: &Target) {
+        if let Some(keys) = self.toml.as_ref().map(|t| t.targets.keys()) {
+            for mentioned_target in keys {
+                let mentioned_target_norm = mentioned_target
+                    .to_string()
+                    .replace(|c| c == '-' || c == '_', "")
+                    .to_lowercase();
+                let target_norm = target
+                    .to_string()
+                    .replace(|c| c == '-' || c == '_', "")
+                    .to_lowercase();
+                if mentioned_target != target && mentioned_target_norm == target_norm {
+                    eprintln!("Warning: a target named \"{mentioned_target}\" is mentioned in the Cross configuration, but the current specified target is \"{target}\".");
+                    eprintln!(" > Is the target misspelled in the Cross configuration?");
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
-    fn new_with(toml: Option<Toml>, env: Environment) -> Self {
+    fn new_with(toml: Option<CrossToml>, env: Environment) -> Self {
         Config { toml, env }
     }
 
     pub fn xargo(&self, target: &Target) -> Result<Option<bool>> {
         let (build_xargo, target_xargo) = self.env.xargo(target)?;
         let (toml_build_xargo, toml_target_xargo) = if let Some(ref toml) = self.toml {
-            toml.xargo(target)?
+            toml.xargo(target)
         } else {
             (None, None)
         };
@@ -145,7 +168,7 @@ impl Config {
         if let Some(env_value) = env_value {
             return Ok(Some(env_value));
         }
-        self.toml.as_ref().map_or(Ok(None), |t| t.image(target))
+        self.toml.as_ref().map_or(Ok(None), |t| Ok(t.image(target)))
     }
 
     pub fn runner(&self, target: &Target) -> Result<Option<String>> {
@@ -153,7 +176,9 @@ impl Config {
         if let Some(env_value) = env_value {
             return Ok(Some(env_value));
         }
-        self.toml.as_ref().map_or(Ok(None), |t| t.runner(target))
+        self.toml
+            .as_ref()
+            .map_or(Ok(None), |t| Ok(t.runner(target)))
     }
 
     pub fn env_passthrough(&self, target: &Target) -> Result<Vec<String>> {
@@ -179,15 +204,24 @@ impl Config {
         Ok(collected)
     }
 
-    fn sum_of_env_toml_values<'a>(
-        toml_getter: impl FnOnce() -> Option<Result<Vec<&'a str>>>,
+    pub fn target(&self, target_list: &TargetList) -> Option<Target> {
+        if let Some(env_value) = self.env.target() {
+            return Some(Target::from(&env_value, target_list));
+        }
+        self.toml
+            .as_ref()
+            .and_then(|t| t.default_target(target_list))
+    }
+
+    fn sum_of_env_toml_values(
+        toml_getter: impl FnOnce() -> Option<Vec<String>>,
         env_values: Option<Vec<String>>,
     ) -> Result<Vec<String>> {
         let mut collect = vec![];
         if let Some(mut vars) = env_values {
             collect.append(&mut vars);
         } else if let Some(toml_values) = toml_getter() {
-            collect.extend(toml_values?.into_iter().map(|v| v.to_string()));
+            collect.extend(toml_values.into_iter());
         }
 
         Ok(collect)
@@ -199,11 +233,17 @@ mod tests {
     use super::*;
     use crate::{Target, TargetList};
 
-    fn target() -> Target {
-        let target_list = TargetList {
-            triples: vec!["aarch64-unknown-linux-gnu".to_string()],
-        };
+    fn target_list() -> TargetList {
+        TargetList {
+            triples: vec![
+                "aarch64-unknown-linux-gnu".to_string(),
+                "armv7-unknown-linux-musleabihf".to_string(),
+            ],
+        }
+    }
 
+    fn target() -> Target {
+        let target_list = target_list();
         Target::from("aarch64-unknown-linux-gnu", &target_list)
     }
 
@@ -272,18 +312,14 @@ mod tests {
         }
     }
 
+    #[cfg(test)]
     mod test_config {
 
         use super::*;
         use std::matches;
 
-        fn toml(content: &str) -> Result<crate::Toml> {
-            Ok(crate::Toml {
-                table: match content.parse().wrap_err("couldn't parse toml")? {
-                    toml::Value::Table(table) => table,
-                    _ => eyre::bail!("couldn't parse toml as TOML table"),
-                },
-            })
+        fn toml(content: &str) -> Result<crate::CrossToml> {
+            Ok(CrossToml::parse(content).wrap_err("couldn't parse toml")?.0)
         }
 
         #[test]
@@ -352,6 +388,45 @@ mod tests {
             Ok(())
         }
 
+        #[test]
+        pub fn no_env_and_no_toml_default_target_then_none() -> Result<()> {
+            let config = Config::new_with(None, Environment::new(None));
+            let config_target = config.target(&target_list());
+            assert!(matches!(config_target, None));
+
+            Ok(())
+        }
+
+        #[test]
+        pub fn env_and_toml_default_target_then_use_env() -> Result<()> {
+            let mut map = HashMap::new();
+            map.insert("CROSS_BUILD_TARGET", "armv7-unknown-linux-musleabihf");
+            let env = Environment::new(Some(map));
+            let config = Config::new_with(Some(toml(TOML_DEFAULT_TARGET)?), env);
+
+            let config_target = config.target(&target_list()).unwrap();
+            assert!(matches!(
+                config_target.triple(),
+                "armv7-unknown-linux-musleabihf"
+            ));
+
+            Ok(())
+        }
+
+        #[test]
+        pub fn no_env_but_toml_default_target_then_use_toml() -> Result<()> {
+            let env = Environment::new(None);
+            let config = Config::new_with(Some(toml(TOML_DEFAULT_TARGET)?), env);
+
+            let config_target = config.target(&target_list()).unwrap();
+            assert!(matches!(
+                config_target.triple(),
+                "aarch64-unknown-linux-gnu"
+            ));
+
+            Ok(())
+        }
+
         static TOML_BUILD_XARGO_FALSE: &str = r#"
     [build]
     xargo = false
@@ -367,6 +442,11 @@ mod tests {
     volumes = ["VOLUME3", "VOLUME4"]
     [target.aarch64-unknown-linux-gnu]
     xargo = false
+    "#;
+
+        static TOML_DEFAULT_TARGET: &str = r#"
+    [build]
+    default-target = "aarch64-unknown-linux-gnu"
     "#;
     }
 }

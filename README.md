@@ -83,7 +83,8 @@ $ cross rustc --target powerpc-unknown-linux-gnu --release -- -C lto
 ## Configuration
 
 You can place a `Cross.toml` file in the root of your Cargo project or use a
-`CROSS_CONFIG` environment variable to tweak `cross`'s behavior:
+`CROSS_CONFIG` environment variable to tweak `cross`'s behavior. The format
+of `Cross.toml` is documented in [docs/cross_toml.md](docs/cross_toml.md).
 
 ### Custom Docker images
 
@@ -225,7 +226,7 @@ non-standard targets (i.e. something not reported by rustc/rustup). However,
 you can use the `build.xargo` or `target.{{TARGET}}.xargo` field in
 `Cross.toml` to force the use of `xargo`:
 
-``` toml
+```toml
 # all the targets will use `xargo`
 [build]
 xargo = true
@@ -233,7 +234,7 @@ xargo = true
 
 Or,
 
-``` toml
+```toml
 # only this target will use `xargo`
 [target.aarch64-unknown-linux-gnu]
 xargo = true
@@ -263,23 +264,23 @@ terminate.
 | Target                               |  libc  |   GCC   | C++ | QEMU  | `test` |
 |--------------------------------------|-------:|--------:|:---:|------:|:------:|
 | `*-apple-ios` [1]                    | N/A    | N/A     | N/A | N/A   |   ✓    |
-| `aarch64-linux-android` [2]          | N/A    | 4.9     | ✓   | N/A   |   ✓    |
+| `aarch64-linux-android` [2]          | 9.0.0  | 4.9     | ✓   | 5.1.0 |   ✓    |
 | `aarch64-unknown-linux-gnu`          | 2.19   | 4.8.2   | ✓   | 5.1.0 |   ✓    |
 | `aarch64-unknown-linux-musl`         | 1.1.20 | 6.3.0   |     | 5.1.0 |   ✓    |
-| `arm-linux-androideabi` [2]          | N/A    | 4.9     | ✓   | N/A   |   ✓    |
+| `arm-linux-androideabi` [2]          | 9.0.0  | 4.9     | ✓   | 5.1.0 |   ✓    |
 | `arm-unknown-linux-gnueabi`          | 2.19   | 4.8.2   | ✓   | 5.1.0 |   ✓    |
 | `arm-unknown-linux-gnueabihf`        | 2.27   | 7.3.0   | ✓   | 5.1.0 |   ✓    |
 | `arm-unknown-linux-musleabi`         | 1.1.20 | 6.3.0   |     | 5.1.0 |   ✓    |
 | `arm-unknown-linux-musleabihf`       | 1.1.20 | 6.3.0   |     | 5.1.0 |   ✓    |
 | `armv5te-unknown-linux-gnueabi`      | 2.27   | 7.5.0   | ✓   | 5.1.0 |   ✓    |
 | `armv5te-unknown-linux-musleabi`     | 1.1.20 | 6.3.0   |     | 5.1.0 |   ✓    |
-| `armv7-linux-androideabi` [2]        | N/A    | 4.9     | ✓   | N/A   |   ✓    |
+| `armv7-linux-androideabi` [2]        | 9.0.0  | 4.9     | ✓   | 5.1.0 |   ✓    |
 | `armv7-unknown-linux-gnueabihf`      | 2.15   | 4.6.2   | ✓   | 5.1.0 |   ✓    |
 | `armv7-unknown-linux-musleabihf`     | 1.1.20 | 6.3.0   |     | 5.1.0 |   ✓    |
 | `i586-unknown-linux-gnu`             | 2.23   | 5.3.1   | ✓   | N/A   |   ✓    |
 | `i586-unknown-linux-musl`            | 1.1.20 | 6.3.0   |     | N/A   |   ✓    |
 | `i686-unknown-freebsd` [4]           | 12.1   | 6.4.0   |     | N/A   |   ✓    |
-| `i686-linux-android` [2]             | N/A    | 4.9     | ✓   | N/A   |   ✓    |
+| `i686-linux-android` [2]             | 9.0.0  | 4.9     | ✓   | 5.1.0 |   ✓    |
 | `i686-pc-windows-gnu`                | N/A    | 7.3.0   | ✓   | N/A   |   ✓    |
 | `i686-unknown-linux-gnu`             | 2.15   | 4.6.2   | ✓   | N/A   |   ✓    |
 | `i686-unknown-linux-musl`            | 1.1.20 | 6.3.0   |     | N/A   |   ✓    |
@@ -301,7 +302,7 @@ terminate.
 | `thumbv7em-none-eabihf` [5]          | 2.2.0  | 5.3.1   |     | N/A   |        |
 | `thumbv7m-none-eabi` [5]             | 2.2.0  | 5.3.1   |     | N/A   |        |
 | `wasm32-unknown-emscripten` [6]      | 1.1.15 | 1.37.13 | ✓   | N/A   |   ✓    |
-| `x86_64-linux-android` [2]           | N/A    | 4.9     | ✓   | N/A   |   ✓    |
+| `x86_64-linux-android` [2]           | 9.0.0  | 4.9     | ✓   | 5.1.0 |   ✓    |
 | `x86_64-pc-windows-gnu`              | N/A    | 7.3.0   | ✓   | N/A   |   ✓    |
 | `x86_64-sun-solaris` [4]             | 2.11   | 5.3.0   | ✓   | N/A   |        |
 | `x86_64-unknown-freebsd` [4]         | 12.1   | 6.4.0   |     | N/A   |   ✓    |
@@ -312,7 +313,7 @@ terminate.
 
 [1] iOS cross compilation is supported on macOS hosts.
 
-[2] Only works with native tests, that is, tests that do not depends on the
+[2] libc = bionic; Only works with native tests, that is, tests that do not depends on the
     Android Runtime. For i686 some tests may fails with the error `assertion
     failed: signal(libc::SIGPIPE, libc::SIG_IGN) != libc::SIG_ERR`, see
     [issue #140](https://github.com/cross-rs/cross/issues/140) for more

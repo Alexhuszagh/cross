@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+- #629 - Update Android NDK version and API version
+- #681 - Warn on unknown fields and confusable targets
+- #665 - when not using [env.volumes](https://github.com/cross-rs/cross#mounting-volumes-into-the-build-environment), mount project in /project
+- #624 - Add `build.default-target`
+- #670 - Use serde for deserialization of Cross.toml
+- Change rust edition to 2021 and bump MSRV for the cross binary to 1.58.1
 - #654 - Use color-eyre for error reporting
 - #658 - Upgrade dependencies
 - #647 - Add `mips64-unknown-linux-muslabi64` and `mips64el-unknown-linux-muslabi64` support
