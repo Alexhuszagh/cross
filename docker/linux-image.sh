@@ -51,6 +51,39 @@ max_kernel_version() {
     echo "${versions[index]}"
 }
 
+remove_dummy_packages() {
+    # sometimes the linux-image on sparc64 can have only documentation
+    # which causes a failing install, so a lower version must be used.
+    # this removes the dummy packages, forcing 50+ files in a package.
+    # this might have been a once-off bug, so we might remove this later
+    local IFS=$'\n'
+    local -a packages
+    local -a real_packages=()
+    local package
+    local file_list
+    local files
+    local count
+
+    read -r -d '' -a packages <<< "$1"
+    for package in "${packages[@]}"; do
+        # the results have the format $package: $file, so
+        # we want to count the number of lines
+        apt-get -d --no-install-recommends download "$package" -qq 2>/dev/null >/dev/null
+        file_list="$(dpkg --contents "$package"_*.deb)"
+        read -r -d '' -a files <<< "$file_list"
+        count="${#files[@]}"
+
+        # the real packages have many > 1000 files, so a high threshold is fine
+        if [ "$count" -gt 50 ]; then
+            real_packages+=("$package")
+        fi
+
+        rm "$package"_*.deb
+    done
+
+    echo "${real_packages[*]}"
+}
+
 main() {
     # arch in the rust target
     local arch="${1}" \
@@ -65,6 +98,7 @@ main() {
     local kernel=
     local libgcc="libgcc-s1"
     local ncurses=
+    local remove_dummy=
 
     # select debian arch and kernel version
     case "${arch}" in
@@ -131,13 +165,14 @@ main() {
             kernel="5.*-s390x"
             ;;
         sparc64)
-            # there is no stable port
+            # sometimes the latest image only contains documentation.
             # https://packages.debian.org/en/sid/linux-image-sparc64
             kernel='5.*-sparc64'
             debsource="deb http://ftp.ports.debian.org/debian-ports unstable main"
             debsource="${debsource}\ndeb http://ftp.ports.debian.org/debian-ports unreleased main"
             # sid version of dropbear requires these dependencies
             deps=(libcrypt1:"${arch}")
+            remove_dummy=1
             ;;
         x86_64)
             arch=amd64
@@ -205,6 +240,9 @@ main() {
         # since the sort is non-trivial and must extract subcomponents.
         packages=$(apt-cache search ^linux-image-"$kernel$" --names-only)
         names=$(echo "$packages" | cut -d ' ' -f 1)
+        if [ ! -z "$remove_dummy" ]; then
+            names=$(remove_dummy_packages "$names")
+        fi
         kversions="${names//linux-image-/}"
         kernel=$(max_kernel_version "$kversions")
     fi
