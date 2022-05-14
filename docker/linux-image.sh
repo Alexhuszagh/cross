@@ -133,8 +133,7 @@ main() {
         sparc64)
             # there is no stable port
             # https://packages.debian.org/en/sid/linux-image-sparc64
-            # the latest image doesn't work as of 5.16.18-1
-            kernel='5.16.0-6-sparc64'
+            kernel='5.*-sparc64'
             debsource="deb http://ftp.ports.debian.org/debian-ports unstable main"
             debsource="${debsource}\ndeb http://ftp.ports.debian.org/debian-ports unreleased main"
             # sid version of dropbear requires these dependencies
