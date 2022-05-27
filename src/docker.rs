@@ -194,6 +194,16 @@ pub fn run(
     let mut docker = docker_command("run")?;
     let engine_type = get_engine_type(get_container_engine().unwrap(), verbose)?;
 
+    if config.ssh(target).unwrap_or(false) {
+        let ssh_auth_sock = env::var("SSH_AUTH_SOCK")
+            .map_err(|_| eyre::eyre!("SSH_AUTH_SOCK environment variable not defined: is the ssh-agent running"))?;
+        docker.args(&[
+            "-v",
+            &format!("{}:{}", ssh_auth_sock, "/ssh-agent"),
+        ]);
+        docker.args(&["-e", "SSH_AUTH_SOCK=/ssh-agent"]);
+    }
+
     for ref var in config.env_passthrough(target)? {
         validate_env_var(var)?;
 

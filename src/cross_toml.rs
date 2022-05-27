@@ -21,6 +21,7 @@ pub struct CrossBuildConfig {
     #[serde(default)]
     env: CrossEnvConfig,
     xargo: Option<bool>,
+    ssh: Option<bool>,
     default_target: Option<String>,
 }
 
@@ -28,6 +29,7 @@ pub struct CrossBuildConfig {
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct CrossTargetConfig {
     xargo: Option<bool>,
+    ssh: Option<bool>,
     image: Option<String>,
     runner: Option<String>,
     #[serde(default)]
@@ -79,6 +81,11 @@ impl CrossToml {
         self.get_bool(target, |b| b.xargo, |t| t.xargo)
     }
 
+    /// Returns the `build.ssh` or the `target.{}.ssh` part of `Cross.toml`
+    pub fn ssh(&self, target: &Target) -> (Option<bool>, Option<bool>) {
+        self.get_bool(target, |b| b.ssh, |t| t.ssh)
+    }
+
     /// Returns the list of environment variables to pass through for `build`,
     pub fn env_passthrough_build(&self) -> &[String] {
         &self.build.env.passthrough
@@ -112,6 +119,7 @@ impl CrossToml {
         self.targets.get(target)
     }
 
+//<<<<<<< HEAD
     fn get_string(
         &self,
         target: &Target,
@@ -165,6 +173,7 @@ mod tests {
                     passthrough: vec!["VAR1".to_string(), "VAR2".to_string()],
                 },
                 xargo: Some(true),
+                ssh: Some(false),
                 default_target: None,
             },
         };
@@ -172,6 +181,7 @@ mod tests {
         let test_str = r#"
           [build]
           xargo = true
+          ssh = false
 
           [build.env]
           volumes = ["VOL1_ARG", "VOL2_ARG"]
@@ -198,6 +208,7 @@ mod tests {
                     volumes: vec!["VOL1_ARG".to_string(), "VOL2_ARG".to_string()],
                 },
                 xargo: Some(false),
+                ssh: None,
                 image: Some("test-image".to_string()),
                 runner: None,
             },

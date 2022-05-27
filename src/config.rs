@@ -56,6 +56,10 @@ impl Environment {
         self.get_values_for("XARGO", target, bool_from_envvar)
     }
 
+    fn ssh(&self, target: &Target) -> (Option<bool>, Option<bool>) {
+        self.get_values_for("SSH", target, bool_from_envvar)
+    }
+
     fn image(&self, target: &Target) -> Option<String> {
         self.get_target_var(target, "IMAGE")
     }
@@ -191,6 +195,10 @@ impl Config {
         self.bool_from_config(target, Environment::xargo, CrossToml::xargo)
     }
 
+    pub fn ssh(&self, target: &Target) -> Option<bool> {
+        self.bool_from_config(target, Environment::ssh, CrossToml::ssh)
+    }
+
     pub fn image(&self, target: &Target) -> Result<Option<String>> {
         self.string_from_config(target, Environment::image, CrossToml::image)
     }
@@ -279,10 +287,13 @@ mod tests {
         pub fn build_and_target_set_returns_tuple() {
             let mut map = std::collections::HashMap::new();
             map.insert("CROSS_BUILD_XARGO", "true");
+            map.insert("CROSS_BUILD_SSH", "true");
             map.insert("CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_XARGO", "false");
+            map.insert("CROSS_TARGET_AARCH64_UNKNOWN_LINUX_GNU_SSH", "false");
 
             let env = Environment::new(Some(map));
             assert_eq!(env.xargo(&target()), (Some(true), Some(false)));
+            assert_eq!(env.ssh(&target()), (Some(true), Some(false)));
         }
 
         #[test]
