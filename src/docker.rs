@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::{env, fs};
+use std::{env, fmt, fs};
 
 use crate::cargo::Root;
 use crate::errors::*;
@@ -52,6 +52,52 @@ pub fn register(target: &Target, verbose: bool) -> Result<()> {
         .run(verbose)
 }
 
+// dead code analysis doesn't realize clone is needed for copy.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub enum CachingType {
+    None,
+    Cached,
+    Delegated,
+}
+
+impl CachingType {
+    fn from_str(string: Option<String>) -> Result<Self> {
+        match string.as_deref() {
+            Some("cached") => Ok(Self::Cached),
+            Some("delegated") => Ok(Self::Delegated),
+            Some("") | None => Ok(Self::None),
+            Some(c) => Err(eyre::eyre!("invalid caching type, got {}", c)),
+        }
+    }
+
+    fn format(&self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Cached => Some("cached"),
+            Self::Delegated => Some("delegated"),
+        }
+    }
+}
+
+fn fmt_volume<T, U>(src: T, dst: U, options: Option<&str>, caching: CachingType) -> String
+where
+    T: fmt::Display,
+    U: fmt::Display,
+{
+    let caching = caching.format();
+    let opts = match (options, caching) {
+        (Some(o), Some(c)) => Some(format!("{},{}", o, c)),
+        (Some(o), None) => Some(o.to_string()),
+        (None, Some(c)) => Some(c.to_string()),
+        _ => None,
+    };
+    match opts {
+        Some(o) => format!("{}:{}:{}", src, dst, o),
+        None => format!("{}:{}", src, dst),
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // TODO: refactor
 pub fn run(
     target: &Target,
@@ -76,6 +122,7 @@ pub fn run(
     let xargo_dir = env::var_os("XARGO_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir.join(".xargo"));
+    let caching = CachingType::from_str(env::var("CROSS_CONTAINER_CACHING").ok())?;
     let nix_store_dir = env::var_os("NIX_STORE").map(PathBuf::from);
     let target_dir = target_dir.clone().unwrap_or_else(|| root.join("target"));
 
@@ -158,7 +205,7 @@ pub fn run(
             }
             docker.args(&[
                 "-v",
-                &format!("{}:{}", host_path.display(), mount_path.display()),
+                &fmt_volume(host_path.display(), mount_path.display(), None, caching)
             ]);
             docker.args(&["-e", &format!("{}={}", var, mount_path.display())]);
             env_volumes = true;
@@ -214,21 +261,21 @@ pub fn run(
             "-e",
             &format!("CROSS_RUNNER={}", runner.unwrap_or_default()),
         ])
-        .args(&["-v", &format!("{}:/xargo:Z", xargo_dir.display())])
-        .args(&["-v", &format!("{}:/cargo:Z", cargo_dir.display())])
+        .args(&["-v", &fmt_volume(xargo_dir.display(), "/xargo", Some("Z"), caching)])
+        .args(&["-v", &fmt_volume(cargo_dir.display(), "/cargo", Some("Z"), caching)])
         // Prevent `bin` from being mounted inside the Docker container.
         .args(&["-v", "/cargo/bin"]);
     if env_volumes {
         docker.args(&[
             "-v",
-            &format!("{}:{}:Z", host_root.display(), mount_root.display()),
+            &fmt_volume(host_root.display(), mount_root.display(), Some("Z"), caching)
         ]);
     } else {
-        docker.args(&["-v", &format!("{}:/project:Z", host_root.display())]);
+        docker.args(&["-v", &fmt_volume(host_root.display(), "/project", Some("Z"), caching)]);
     }
     docker
-        .args(&["-v", &format!("{}:/rust:Z,ro", sysroot.display())])
-        .args(&["-v", &format!("{}:/target:Z", target_dir.display())]);
+        .args(&["-v", &fmt_volume(sysroot.display(), "/rust", Some("Z,ro"), caching)])
+        .args(&["-v", &fmt_volume(target_dir.display(), "/target", Some("Z"), caching)]);
 
     if env_volumes {
         docker.args(&["-w", &mount_root.display().to_string()]);
@@ -241,7 +288,7 @@ pub fn run(
     if let Some(nix_store) = nix_store_dir {
         docker.args(&[
             "-v",
-            &format!("{}:{}:Z", nix_store.display(), nix_store.display()),
+            &fmt_volume(nix_store.display(), nix_store.display(), Some("Z"), caching)
         ]);
     }
 
