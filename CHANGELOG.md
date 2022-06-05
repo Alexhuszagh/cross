@@ -32,6 +32,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
+- #757 - fixed bind mounts on podman by removing SELinux labels.
 - #727 - add `PKG_CONFIG_PATH` to all `*-linux-gnu` images.
 - #722 - boolean environment variables are evaluated as truthy or falsey.
 - #720 - add android runner to preload `libc++_shared.so`.

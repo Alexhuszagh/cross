@@ -17,13 +17,15 @@ const PODMAN: &str = "podman";
 
 // determine if the container engine is docker. this fixes issues with
 // any aliases (#530), and doesn't fail if an executable suffix exists.
-fn get_is_docker(ce: std::path::PathBuf, verbose: bool) -> Result<bool> {
+fn get_engine_type(ce: std::path::PathBuf, verbose: bool) -> Result<(bool, bool)> {
     let stdout = Command::new(ce)
         .arg("--help")
         .run_and_get_stdout(verbose)?
         .to_lowercase();
 
-    Ok(stdout.contains("docker") && !stdout.contains("emulate"))
+    let is_docker = stdout.contains("docker") && !stdout.contains("emulate");
+    let is_podman = stdout.contains("podman");
+    Ok((is_docker, is_podman))
 }
 
 fn get_container_engine() -> Result<std::path::PathBuf, which::Error> {
@@ -74,6 +76,33 @@ fn validate_env_var(var: &str) -> Result<(&str, Option<&str>)> {
     }
 
     Ok((key, value))
+}
+
+// NOTE: podman on macos does not currently support SELinux labels
+// https://github.com/containers/podman/issues/13631
+struct BindMount {
+    is_podman: bool,
+}
+
+impl BindMount {
+    fn create<T, U>(&self, src: T, dst: U, private: bool, readonly: bool) -> String
+    where
+        T: std::fmt::Display,
+        U: std::fmt::Display,
+    {
+        let mut opts = vec![];
+        if private && !(self.is_podman && cfg!(target_os = "macos")) {
+            opts.push("Z")
+        }
+        if readonly {
+            opts.push("ro")
+        }
+        if opts.is_empty() {
+            format!("{}:{}", src, dst)
+        } else {
+            format!("{}:{}:{}", src, dst, opts.join(","))
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // TODO: refactor
@@ -137,7 +166,8 @@ pub fn run(
     let runner = config.runner(target)?;
 
     let mut docker = docker_command("run")?;
-    let is_docker = get_is_docker(get_container_engine().unwrap(), verbose)?;
+    let (is_docker, is_podman) = get_engine_type(get_container_engine().unwrap(), verbose)?;
+    let mount = BindMount { is_podman };
 
     for ref var in config.env_passthrough(target)? {
         validate_env_var(var)?;
@@ -175,7 +205,7 @@ pub fn run(
             }
             docker.args(&[
                 "-v",
-                &format!("{}:{}", host_path.display(), mount_path.display()),
+                &mount.create(host_path.display(), mount_path.display(), false, false),
             ]);
             docker.args(&["-e", &format!("{}={}", var, mount_path.display())]);
             env_volumes = true;
@@ -229,21 +259,33 @@ pub fn run(
             "-e",
             &format!("CROSS_RUNNER={}", runner.unwrap_or_default()),
         ])
-        .args(&["-v", &format!("{}:/xargo:Z", xargo_dir.display())])
-        .args(&["-v", &format!("{}:/cargo:Z", cargo_dir.display())])
+        .args(&[
+            "-v",
+            &mount.create(xargo_dir.display(), "/xargo", true, false),
+        ])
+        .args(&[
+            "-v",
+            &mount.create(cargo_dir.display(), "/cargo", true, false),
+        ])
         // Prevent `bin` from being mounted inside the Docker container.
         .args(&["-v", "/cargo/bin"]);
     if env_volumes {
         docker.args(&[
             "-v",
-            &format!("{}:{}:Z", host_root.display(), mount_root.display()),
+            &mount.create(host_root.display(), mount_root.display(), true, false),
         ]);
     } else {
-        docker.args(&["-v", &format!("{}:/project:Z", host_root.display())]);
+        docker.args(&[
+            "-v",
+            &mount.create(host_root.display(), "/project", true, false),
+        ]);
     }
     docker
-        .args(&["-v", &format!("{}:/rust:Z,ro", sysroot.display())])
-        .args(&["-v", &format!("{}:/target:Z", target_dir.display())]);
+        .args(&["-v", &mount.create(sysroot.display(), "/rust", true, true)])
+        .args(&[
+            "-v",
+            &mount.create(target_dir.display(), "/target", true, false),
+        ]);
 
     if env_volumes {
         docker.args(&["-w", &mount_root.display().to_string()]);
@@ -256,7 +298,7 @@ pub fn run(
     if let Some(nix_store) = nix_store_dir {
         docker.args(&[
             "-v",
-            &format!("{}:{}:Z", nix_store.display(), nix_store.display()),
+            &mount.create(nix_store.display(), nix_store.display(), true, false),
         ]);
     }
 
