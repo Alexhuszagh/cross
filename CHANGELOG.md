@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 
+- #TODO - added private SSH dependency support.
 - #775 - forward Cargo exit code to host
 - #767 - added the `cross-util` and `cross-dev` commands.
 - #745 - added `thumbv7neon-*` targets.
