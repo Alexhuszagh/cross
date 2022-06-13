@@ -30,6 +30,8 @@ mod interpreter;
 mod rustc;
 mod rustup;
 
+pub mod commands;
+
 use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -39,10 +41,10 @@ use config::Config;
 use rustc_version::Channel;
 use serde::Deserialize;
 
-pub use self::cargo::{cargo_metadata_with_args, CargoMetadata, Subcommand};
 use self::cross_toml::CrossToml;
 use self::errors::Context;
 
+pub use self::cargo::{cargo_metadata_with_args, CargoMetadata, Subcommand};
 pub use self::docker::*;
 pub use self::errors::{install_panic_hook, Result};
 pub use self::extensions::*;
