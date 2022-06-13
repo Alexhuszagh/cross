@@ -42,12 +42,11 @@ use serde::Deserialize;
 pub use self::cargo::{cargo_metadata_with_args, CargoMetadata, Subcommand};
 use self::cross_toml::CrossToml;
 use self::errors::Context;
-use self::rustc::{TargetList, VersionMetaExt};
 
-pub use self::docker::get_container_engine;
-pub use self::docker::CROSS_IMAGE;
+pub use self::docker::*;
 pub use self::errors::{install_panic_hook, Result};
-pub use self::extensions::{CommandExt, OutputExt};
+pub use self::extensions::*;
+pub use self::rustc::{target_list, version_meta, TargetList, VersionMetaExt};
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,7 +245,7 @@ impl std::fmt::Display for Target {
 }
 
 impl Target {
-    fn from(triple: &str, target_list: &TargetList) -> Target {
+    pub fn from(triple: &str, target_list: &TargetList) -> Target {
         if target_list.contains(triple) {
             Target::new_built_in(triple)
         } else {
@@ -277,6 +276,32 @@ impl From<&str> for Target {
     }
 }
 
+pub fn get_sysroot(
+    host: &Host,
+    target: &Target,
+    channel: Option<&str>,
+    verbose: bool,
+) -> Result<(String, PathBuf)> {
+    let mut sysroot = rustc::sysroot(host, target, verbose)?;
+    let default_toolchain = sysroot
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .ok_or_else(|| eyre::eyre!("couldn't get toolchain name"))?;
+    let toolchain = if let Some(channel) = channel {
+        [channel]
+            .iter()
+            .cloned()
+            .chain(default_toolchain.splitn(2, '-').skip(1))
+            .collect::<Vec<_>>()
+            .join("-")
+    } else {
+        default_toolchain.to_string()
+    };
+    sysroot.set_file_name(&toolchain);
+
+    Ok((toolchain, sysroot))
+}
+
 pub fn run() -> Result<ExitStatus> {
     let target_list = rustc::target_list(false)?;
     let args = cli::parse(&target_list)?;
@@ -293,8 +318,7 @@ pub fn run() -> Result<ExitStatus> {
         .iter()
         .any(|a| a == "--verbose" || a == "-v" || a == "-vv");
 
-    let host_version_meta =
-        rustc_version::version_meta().wrap_err("couldn't fetch the `rustc` version")?;
+    let host_version_meta = rustc::version_meta()?;
     let cwd = std::env::current_dir()?;
     if let Some(metadata) = cargo_metadata_with_args(None, Some(&args), verbose)? {
         let host = host_version_meta.host();
@@ -315,22 +339,8 @@ pub fn run() -> Result<ExitStatus> {
         };
 
         if image_exists && host.is_supported(Some(&target)) {
-            let mut sysroot = rustc::sysroot(&host, &target, verbose)?;
-            let default_toolchain = sysroot
-                .file_name()
-                .and_then(|file_name| file_name.to_str())
-                .ok_or_else(|| eyre::eyre!("couldn't get toolchain name"))?;
-            let toolchain = if let Some(channel) = args.channel {
-                [channel]
-                    .iter()
-                    .map(|c| c.as_str())
-                    .chain(default_toolchain.splitn(2, '-').skip(1))
-                    .collect::<Vec<_>>()
-                    .join("-")
-            } else {
-                default_toolchain.to_string()
-            };
-            sysroot.set_file_name(&toolchain);
+            let (toolchain, sysroot) =
+                get_sysroot(&host, &target, args.channel.as_deref(), verbose)?;
             let mut is_nightly = toolchain.contains("nightly");
 
             let installed_toolchains = rustup::installed_toolchains(verbose)?;
@@ -429,7 +439,7 @@ pub fn run() -> Result<ExitStatus> {
                     && target.needs_interpreter()
                     && !interpreter::is_registered(&target)?
                 {
-                    docker::register(&target, verbose)?
+                    docker::register(&target, args.is_remote, verbose)?
                 }
 
                 return docker::run(
@@ -441,6 +451,7 @@ pub fn run() -> Result<ExitStatus> {
                     &sysroot,
                     verbose,
                     args.docker_in_docker,
+                    args.is_remote,
                     &cwd,
                 );
             }

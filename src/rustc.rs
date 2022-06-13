@@ -56,3 +56,7 @@ pub fn sysroot(host: &Host, target: &Target, verbose: bool) -> Result<PathBuf> {
 
     Ok(PathBuf::from(stdout))
 }
+
+pub fn version_meta() -> Result<rustc_version::VersionMeta> {
+    rustc_version::version_meta().wrap_err("couldn't fetch the `rustc` version")
+}

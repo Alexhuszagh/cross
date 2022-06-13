@@ -16,6 +16,7 @@ pub struct Args {
     pub target_dir: Option<PathBuf>,
     pub docker_in_docker: bool,
     pub enable_doctests: bool,
+    pub is_remote: bool,
     pub manifest_path: Option<PathBuf>,
 }
 
@@ -139,6 +140,9 @@ pub fn parse(target_list: &TargetList) -> Result<Args> {
     let enable_doctests = env::var("CROSS_UNSTABLE_ENABLE_DOCTESTS")
         .map(|s| bool_from_envvar(&s))
         .unwrap_or_default();
+    let is_remote = env::var("CROSS_REMOTE")
+        .map(|s| bool_from_envvar(&s))
+        .unwrap_or_default();
 
     Ok(Args {
         all,
@@ -149,6 +153,7 @@ pub fn parse(target_list: &TargetList) -> Result<Args> {
         target_dir,
         docker_in_docker,
         enable_doctests,
+        is_remote,
         manifest_path,
     })
 }

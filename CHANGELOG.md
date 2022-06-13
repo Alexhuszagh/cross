@@ -7,6 +7,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 
+- #785 - added support for remote container engines through data volumes. also adds in utility to commands to create and remove persistent data volumes.
 - #782 - added `build-std` config option, which builds the rust standard library from source if enabled.
 - #775 - forward Cargo exit code to host
 - #772 - added `CROSS_CONTAINER_OPTS` environment variable to replace `DOCKER_OPTS`.

@@ -1,13 +1,15 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::{env, fs};
 
 use crate::cargo::CargoMetadata;
+use crate::config::bool_from_envvar;
+use crate::errors::*;
 use crate::extensions::{CommandExt, SafeCommand};
-use crate::file::write_file;
+use crate::file::{self, write_file};
 use crate::id;
-use crate::{errors::*, file};
+use crate::rustc;
 use crate::{Config, Target};
 use atty::Stream;
 use eyre::bail;
@@ -22,11 +24,94 @@ const PODMAN: &str = "podman";
 // to fork the process, and which podman allows by default.
 const SECCOMP: &str = include_str!("seccomp.json");
 
-#[derive(Debug, PartialEq, Eq)]
-enum EngineType {
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EngineType {
     Docker,
     Podman,
+    PodmanRemote,
     Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Engine {
+    pub kind: EngineType,
+    pub path: PathBuf,
+    pub is_remote: bool,
+}
+
+impl Engine {
+    pub fn new(is_remote: bool, verbose: bool) -> Result<Engine> {
+        let path = get_container_engine()
+            .map_err(|_| eyre::eyre!("no container engine found"))
+            .with_suggestion(|| "is docker or podman installed?")?;
+        Self::from_path(path, is_remote, verbose)
+    }
+
+    pub fn from_path(path: PathBuf, is_remote: bool, verbose: bool) -> Result<Engine> {
+        let kind = get_engine_type(&path, verbose)?;
+        Ok(Engine {
+            path,
+            kind,
+            is_remote,
+        })
+    }
+
+    pub fn needs_remote(&self) -> bool {
+        self.is_remote && self.kind == EngineType::Podman
+    }
+}
+
+struct DeleteVolume<'a>(&'a Engine, &'a VolumeId, bool);
+
+impl<'a> Drop for DeleteVolume<'a> {
+    fn drop(&mut self) {
+        if let VolumeId::Discard(id) = self.1 {
+            volume_rm(self.0, id, self.2).ok();
+        }
+    }
+}
+
+struct DeleteContainer<'a>(&'a Engine, &'a str, bool);
+
+impl<'a> Drop for DeleteContainer<'a> {
+    fn drop(&mut self) {
+        container_stop(self.0, self.1, self.2).ok();
+        container_rm(self.0, self.1, self.2).ok();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ContainerState {
+    Created,
+    Running,
+    Paused,
+    Restarting,
+    Dead,
+    Exited,
+    DoesNotExist,
+}
+
+impl ContainerState {
+    pub fn new(state: &str) -> Result<Self> {
+        match state {
+            "created" => Ok(ContainerState::Created),
+            "running" => Ok(ContainerState::Running),
+            "paused" => Ok(ContainerState::Paused),
+            "restarting" => Ok(ContainerState::Restarting),
+            "dead" => Ok(ContainerState::Dead),
+            "exited" => Ok(ContainerState::Exited),
+            "" => Ok(ContainerState::DoesNotExist),
+            _ => eyre::bail!("unknown container state: got {state}"),
+        }
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        matches!(self, Self::Exited | Self::DoesNotExist)
+    }
+
+    pub fn exists(&self) -> bool {
+        !matches!(self, Self::DoesNotExist)
+    }
 }
 
 // determine if the container engine is docker. this fixes issues with
@@ -37,7 +122,9 @@ fn get_engine_type(ce: &Path, verbose: bool) -> Result<EngineType> {
         .run_and_get_stdout(verbose)?
         .to_lowercase();
 
-    if stdout.contains("podman") {
+    if stdout.contains("podman-remote") {
+        Ok(EngineType::PodmanRemote)
+    } else if stdout.contains("podman") {
         Ok(EngineType::Podman)
     } else if stdout.contains("docker") && !stdout.contains("emulate") {
         Ok(EngineType::Docker)
@@ -54,15 +141,23 @@ pub fn get_container_engine() -> Result<PathBuf, which::Error> {
     }
 }
 
-pub fn docker_command(engine: &Path, subcommand: &str) -> Result<Command> {
-    let mut command = Command::new(engine);
+pub fn docker_command(engine: &Engine) -> Command {
+    let mut command = Command::new(&engine.path);
+    if engine.needs_remote() {
+        // if we're using podman and not podman-remote, need `--remote`.
+        command.arg("--remote");
+    }
+    command
+}
+
+pub fn docker_subcommand(engine: &Engine, subcommand: &str) -> Command {
+    let mut command = docker_command(engine);
     command.arg(subcommand);
-    command.args(&["--userns", "host"]);
-    Ok(command)
+    command
 }
 
 /// Register binfmt interpreters
-pub fn register(target: &Target, verbose: bool) -> Result<()> {
+pub fn register(target: &Target, is_remote: bool, verbose: bool) -> Result<()> {
     let cmd = if target.is_windows() {
         // https://www.kernel.org/doc/html/latest/admin-guide/binfmt-misc.html
         "mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc && \
@@ -72,8 +167,9 @@ pub fn register(target: &Target, verbose: bool) -> Result<()> {
             binfmt-support qemu-user-static"
     };
 
-    let engine = get_container_engine()?;
-    docker_command(&engine, "run")?
+    let engine = Engine::new(is_remote, verbose)?;
+    docker_subcommand(&engine, "run")
+        .args(&["--userns", "host"])
         .arg("--privileged")
         .arg("--rm")
         .arg("ubuntu:16.04")
@@ -98,145 +194,452 @@ fn parse_docker_opts(value: &str) -> Result<Vec<String>> {
     shell_words::split(value).wrap_err_with(|| format!("could not parse docker opts of {}", value))
 }
 
+#[derive(Debug)]
+pub struct Directories {
+    pub cargo: PathBuf,
+    pub xargo: PathBuf,
+    pub target: PathBuf,
+    pub nix_store: Option<PathBuf>,
+    pub host_root: PathBuf,
+    pub mount_root: PathBuf,
+    pub mount_cwd: PathBuf,
+    pub sysroot: PathBuf,
+}
+
+impl Directories {
+    #[allow(unused_variables)]
+    pub fn create(
+        metadata: &CargoMetadata,
+        cwd: &Path,
+        sysroot: &Path,
+        docker_in_docker: bool,
+        verbose: bool,
+    ) -> Result<Self> {
+        let mount_finder = if docker_in_docker {
+            MountFinder::new(docker_read_mount_paths()?)
+        } else {
+            MountFinder::default()
+        };
+        let home_dir =
+            home::home_dir().ok_or_else(|| eyre::eyre!("could not find home directory"))?;
+        let cargo = home::cargo_home()?;
+        let xargo = env::var_os("XARGO_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir.join(".xargo"));
+        let nix_store = env::var_os("NIX_STORE").map(PathBuf::from);
+        let target = &metadata.target_directory;
+
+        // create the directories we are going to mount before we mount them,
+        // otherwise `docker` will create them but they will be owned by `root`
+        fs::create_dir(&cargo).ok();
+        fs::create_dir(&xargo).ok();
+        fs::create_dir(&target).ok();
+
+        let cargo = mount_finder.find_mount_path(cargo);
+        let xargo = mount_finder.find_mount_path(xargo);
+        let target = mount_finder.find_mount_path(target);
+
+        // root is either workspace_root, or, if we're outside the workspace root, the current directory
+        let host_root = mount_finder.find_mount_path(if metadata.workspace_root.starts_with(cwd) {
+            cwd
+        } else {
+            &metadata.workspace_root
+        });
+
+        // root is either workspace_root, or, if we're outside the workspace root, the current directory
+        let mount_root: PathBuf;
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, we can not mount the directory name directly. Instead, we use wslpath to convert the path to a linux compatible path.
+            mount_root = wslpath(&host_root, verbose)?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            mount_root = mount_finder.find_mount_path(host_root.clone());
+        }
+        let mount_cwd: PathBuf;
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, we can not mount the directory name directly. Instead, we use wslpath to convert the path to a linux compatible path.
+            mount_cwd = wslpath(cwd, verbose)?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            mount_cwd = mount_finder.find_mount_path(cwd);
+        }
+        let sysroot = mount_finder.find_mount_path(sysroot);
+
+        Ok(Directories {
+            cargo,
+            xargo,
+            target,
+            nix_store,
+            host_root,
+            mount_root,
+            mount_cwd,
+            sysroot,
+        })
+    }
+}
+
+#[derive(Debug)]
+enum VolumeId {
+    Keep(String),
+    Discard(String),
+}
+
+impl VolumeId {
+    fn create(engine: &Engine, container: &str, verbose: bool) -> Result<Self> {
+        let keep_id = format!("{container}-keep");
+        if volume_exists(engine, &keep_id, verbose)? {
+            Ok(Self::Keep(keep_id))
+        } else {
+            Ok(Self::Discard(container.to_string()))
+        }
+    }
+}
+
+impl AsRef<str> for VolumeId {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Keep(s) => s,
+            Self::Discard(s) => s,
+        }
+    }
+}
+
+fn cargo_cmd(uses_xargo: bool) -> SafeCommand {
+    if uses_xargo {
+        SafeCommand::new("xargo")
+    } else {
+        SafeCommand::new("cargo")
+    }
+}
+
 #[allow(unused_variables)]
-pub fn mount(cmd: &mut Command, val: &Path, verbose: bool) -> Result<PathBuf> {
-    let host_path = file::canonicalize(&val)
-        .wrap_err_with(|| format!("when canonicalizing path `{}`", val.display()))?;
-    let mount_path: PathBuf;
+fn canonicalize_mount_path(path: &Path, verbose: bool) -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         // On Windows, we can not mount the directory name directly. Instead, we use wslpath to convert the path to a linux compatible path.
-        mount_path = wslpath(&host_path, verbose)?;
+        wslpath(path, verbose)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        mount_path = host_path.clone();
+        Ok(path.to_path_buf())
     }
-    cmd.args(&[
+}
+
+fn remote_mount_path(val: &Path, verbose: bool) -> Result<PathBuf> {
+    let host_path = file::canonicalize(val)?;
+    canonicalize_mount_path(&host_path, verbose)
+}
+
+fn mount(docker: &mut Command, val: &Path, prefix: &str, verbose: bool) -> Result<PathBuf> {
+    let host_path = file::canonicalize(val)?;
+    let mount_path = canonicalize_mount_path(&host_path, verbose)?;
+    docker.args(&[
         "-v",
-        &format!("{}:{}", host_path.display(), mount_path.display()),
+        &format!("{}:{prefix}{}", host_path.display(), mount_path.display()),
     ]);
     Ok(mount_path)
 }
 
-#[allow(clippy::too_many_arguments)] // TODO: refactor
-pub fn run(
-    target: &Target,
-    args: &[String],
-    metadata: &CargoMetadata,
-    config: &Config,
-    uses_xargo: bool,
-    sysroot: &Path,
+fn create_volume_dir(
+    engine: &Engine,
+    container: &str,
+    dir: &Path,
     verbose: bool,
-    docker_in_docker: bool,
-    cwd: &Path,
 ) -> Result<ExitStatus> {
-    let mount_finder = if docker_in_docker {
-        MountFinder::new(docker_read_mount_paths()?)
+    // make our parent directory if needed
+    docker_subcommand(engine, "exec")
+        .arg(container)
+        .args(&["sh", "-c", &format!("mkdir -p '{}'", dir.display())])
+        .run_and_get_status(verbose)
+}
+
+// copy files for a docker volume, for remote host support
+fn copy_volume_files(
+    engine: &Engine,
+    container: &str,
+    src: &Path,
+    dst: &Path,
+    verbose: bool,
+) -> Result<ExitStatus> {
+    docker_subcommand(engine, "cp")
+        .arg("-a")
+        .arg(&src.display().to_string())
+        .arg(format!("{container}:{}", dst.display()))
+        .run_and_get_status(verbose)
+}
+
+fn is_cachedir_tag(path: &Path) -> Result<bool> {
+    let mut buffer = [b'0'; 43];
+    let mut file = fs::OpenOptions::new().read(true).open(path)?;
+    file.read_exact(&mut buffer)?;
+
+    Ok(&buffer == b"Signature: 8a477f597d28d172789f06886806bc55")
+}
+
+fn is_cachedir(entry: &fs::DirEntry) -> bool {
+    // avoid any cached directories when copying
+    // see https://bford.info/cachedir/
+    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        let path = entry.path().join("CACHEDIR.TAG");
+        path.exists() && is_cachedir_tag(&path).unwrap_or(false)
     } else {
-        MountFinder::default()
-    };
+        false
+    }
+}
 
-    let home_dir = home::home_dir().ok_or_else(|| eyre::eyre!("could not find home directory"))?;
-    let cargo_dir = home::cargo_home()?;
-    let xargo_dir = env::var_os("XARGO_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir.join(".xargo"));
-    let nix_store_dir = env::var_os("NIX_STORE").map(PathBuf::from);
-    let target_dir = &metadata.target_directory;
+// copy files for a docker volume, for remote host support
+fn copy_volume_files_nocache(
+    engine: &Engine,
+    container: &str,
+    src: &Path,
+    dst: &Path,
+    verbose: bool,
+) -> Result<ExitStatus> {
+    // avoid any cached directories when copying
+    // see https://bford.info/cachedir/
+    let tempdir = tempfile::tempdir()?;
+    let temppath = tempdir.path();
+    copy_dir(src, temppath, 0, |e, _| !is_cachedir(e))?;
+    copy_volume_files(engine, container, temppath, dst, verbose)
+}
 
-    // create the directories we are going to mount before we mount them,
-    // otherwise `docker` will create them but they will be owned by `root`
-    fs::create_dir(&target_dir).ok();
-    fs::create_dir(&cargo_dir).ok();
-    fs::create_dir(&xargo_dir).ok();
+pub fn copy_volume_xargo(
+    engine: &Engine,
+    container: &str,
+    xargo_dir: &Path,
+    target: &Target,
+    mount_prefix: &Path,
+    verbose: bool,
+) -> Result<()> {
+    // only need to copy the rustlib files for our current target.
+    let triple = target.triple();
+    let relpath = Path::new("lib").join("rustlib").join(&triple);
+    let src = xargo_dir.join(&relpath);
+    let dst = mount_prefix.join("xargo").join(&relpath);
+    if Path::new(&src).exists() {
+        create_volume_dir(engine, container, dst.parent().unwrap(), verbose)?;
+        copy_volume_files(engine, container, &src, &dst, verbose)?;
+    }
 
-    // update paths to the host mounts path.
-    let cargo_dir = mount_finder.find_mount_path(cargo_dir);
-    let xargo_dir = mount_finder.find_mount_path(xargo_dir);
-    let target_dir = mount_finder.find_mount_path(target_dir);
-    // root is either workspace_root, or, if we're outside the workspace root, the current directory
-    let host_root = mount_finder.find_mount_path(if metadata.workspace_root.starts_with(cwd) {
-        cwd
+    Ok(())
+}
+
+pub fn copy_volume_cargo(
+    engine: &Engine,
+    container: &str,
+    cargo_dir: &Path,
+    mount_prefix: &Path,
+    copy_registry: bool,
+    verbose: bool,
+) -> Result<()> {
+    let dst = mount_prefix.join("cargo");
+    let copy_registry = env::var("CROSS_REMOTE_COPY_REGISTRY")
+        .map(|s| bool_from_envvar(&s))
+        .unwrap_or(copy_registry);
+
+    if copy_registry {
+        copy_volume_files(engine, container, cargo_dir, &dst, verbose)?;
     } else {
-        &metadata.workspace_root
-    });
-    let mount_root: PathBuf;
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows, we can not mount the directory name directly. Instead, we use wslpath to convert the path to a linux compatible path.
-        mount_root = wslpath(&host_root, verbose)?;
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        mount_root = mount_finder.find_mount_path(host_root.clone());
-    }
-    let mount_cwd: PathBuf;
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows, we can not mount the directory name directly. Instead, we use wslpath to convert the path to a linux compatible path.
-        mount_cwd = wslpath(cwd, verbose)?;
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        mount_cwd = mount_finder.find_mount_path(cwd);
-    }
-    let sysroot = mount_finder.find_mount_path(sysroot);
-
-    let mut cmd = if uses_xargo {
-        SafeCommand::new("xargo")
-    } else {
-        SafeCommand::new("cargo")
-    };
-
-    cmd.args(args);
-
-    let runner = config.runner(target)?;
-
-    let engine = get_container_engine()
-        .map_err(|_| eyre::eyre!("no container engine found"))
-        .with_suggestion(|| "is docker or podman installed?")?;
-    let engine_type = get_engine_type(&engine, verbose)?;
-
-    let mut docker = docker_command(&engine, "run")?;
-
-    for ref var in config.env_passthrough(target)? {
-        validate_env_var(var)?;
-
-        // Only specifying the environment variable name in the "-e"
-        // flag forwards the value from the parent shell
-        docker.args(&["-e", var]);
-    }
-    let mut mount_volumes = false;
-    // FIXME(emilgardis 2022-04-07): This is a fallback so that if it's hard for us to do mounting logic, make it simple(r)
-    // Preferably we would not have to do this.
-    if cwd.strip_prefix(&metadata.workspace_root).is_err() {
-        mount_volumes = true;
-    }
-
-    for ref var in config.env_volumes(target)? {
-        let (var, value) = validate_env_var(var)?;
-        let value = match value {
-            Some(v) => Ok(v.to_string()),
-            None => env::var(var),
-        };
-
-        if let Ok(val) = value {
-            let mount_path = mount(&mut docker, val.as_ref(), verbose)?;
-            docker.args(&["-e", &format!("{}={}", var, mount_path.display())]);
-            mount_volumes = true;
+        // can copy a limit subset of files: the rest is present.
+        create_volume_dir(engine, container, &dst, verbose)?;
+        for entry in fs::read_dir(cargo_dir)? {
+            let file = entry?;
+            let basename = file.file_name().to_string_lossy().into_owned();
+            if !basename.starts_with('.') && !matches!(basename.as_ref(), "git" | "registry") {
+                copy_volume_files(engine, container, &file.path(), &dst, verbose)?;
+            }
         }
     }
 
-    for path in metadata.path_dependencies() {
-        mount(&mut docker, path, verbose)?;
-        mount_volumes = true;
+    Ok(())
+}
+
+// recursively copy a directory into another
+fn copy_dir<Skip>(src: &Path, dst: &Path, depth: u32, skip: Skip) -> Result<()>
+where
+    Skip: Copy + Fn(&fs::DirEntry, u32) -> bool,
+{
+    for entry in fs::read_dir(src)? {
+        let file = entry?;
+        if skip(&file, depth) {
+            continue;
+        }
+
+        let src_path = file.path();
+        let dst_path = dst.join(file.file_name());
+        if file.file_type()?.is_file() {
+            fs::copy(&src_path, &dst_path)?;
+        } else {
+            fs::create_dir(&dst_path).ok();
+            copy_dir(&src_path, &dst_path, depth + 1, skip)?;
+        }
     }
 
-    docker.args(&["-e", "PKG_CONFIG_ALLOW_CROSS=1"]);
+    Ok(())
+}
 
-    docker.arg("--rm");
+pub fn copy_volume_rust(
+    engine: &Engine,
+    container: &str,
+    sysroot: &Path,
+    target: &Target,
+    mount_prefix: &Path,
+    verbose: bool,
+) -> Result<()> {
+    // the rust toolchain is quite large, but most of it isn't needed
+    // we need the bin, libexec, and etc directories, and part of the lib directory.
+    let dst = mount_prefix.join("rust");
+    create_volume_dir(engine, container, &dst, verbose)?;
+    for basename in ["bin", "libexec", "etc"] {
+        let file = sysroot.join(basename);
+        copy_volume_files(engine, container, &file, &dst, verbose)?;
+    }
 
+    // the lib directories are rather large, so we want only a subset.
+    // now, we use a temp directory for everything else in the libdir
+    // we can pretty safely assume we don't have symlinks here.
+    let rustlib = Path::new("lib").join("rustlib");
+    let src_rustlib = sysroot.join(&rustlib);
+    let dst_rustlib = dst.join(&rustlib);
+
+    let tempdir = tempfile::tempdir()?;
+    let temppath = tempdir.path();
+    copy_dir(&sysroot.join("lib"), temppath, 0, |e, d| {
+        d == 0 && e.file_name() == "rustlib"
+    })?;
+    fs::create_dir(&temppath.join("rustlib")).ok();
+    copy_dir(
+        &src_rustlib,
+        &temppath.join("rustlib"),
+        0,
+        |entry, depth| {
+            if depth != 0 {
+                return false;
+            }
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => return true,
+            };
+            let file_name = entry.file_name();
+            !(file_type.is_file() || file_name == "src" || file_name == "etc")
+        },
+    )?;
+    copy_volume_files(engine, container, temppath, &dst.join("lib"), verbose)?;
+    // must make the `dst.join("lib")` **after** here, or we copy temp into lib.
+    create_volume_dir(engine, container, &dst_rustlib, verbose)?;
+
+    // we first copy over the toolchain file, then everything besides it.
+    // since we don't want to call docker 100x, we copy the intermediate
+    // files to a temp directory so they're cleaned up afterwards.
+    let toolchain_path = src_rustlib.join(&target.triple());
+    if toolchain_path.exists() {
+        copy_volume_files(engine, container, &toolchain_path, &dst_rustlib, verbose)?;
+    }
+
+    // now we need to copy over the host toolchain too, since it has
+    // some requirements to find std libraries, etc.
+    let rustc = sysroot.join("bin").join("rustc");
+    let libdir = Command::new(rustc)
+        .args(&["--print", "target-libdir"])
+        .run_and_get_stdout(verbose)?;
+    let host_toolchain_path = Path::new(libdir.trim()).parent().unwrap();
+    copy_volume_files(
+        engine,
+        container,
+        host_toolchain_path,
+        &dst_rustlib,
+        verbose,
+    )?;
+
+    Ok(())
+}
+
+pub fn volume_create(engine: &Engine, volume: &str, verbose: bool) -> Result<ExitStatus> {
+    docker_subcommand(engine, "volume")
+        .args(&["create", volume])
+        .run_and_get_status(verbose)
+}
+
+pub fn volume_rm(engine: &Engine, volume: &str, verbose: bool) -> Result<ExitStatus> {
+    docker_subcommand(engine, "volume")
+        .args(&["rm", volume])
+        .run_and_get_status(verbose)
+}
+
+pub fn volume_exists(engine: &Engine, volume: &str, verbose: bool) -> Result<bool> {
+    let output = docker_subcommand(engine, "volume")
+        .args(&["inspect", volume])
+        .run_and_get_output(verbose)?;
+    Ok(output.status.success())
+}
+
+pub fn container_stop(engine: &Engine, container: &str, verbose: bool) -> Result<ExitStatus> {
+    docker_subcommand(engine, "stop")
+        .arg(container)
+        .run_and_get_status(verbose)
+}
+
+pub fn container_rm(engine: &Engine, container: &str, verbose: bool) -> Result<ExitStatus> {
+    docker_subcommand(engine, "rm")
+        .arg(container)
+        .run_and_get_status(verbose)
+}
+
+pub fn container_state(engine: &Engine, container: &str, verbose: bool) -> Result<ContainerState> {
+    let stdout = docker_subcommand(engine, "ps")
+        .arg("-a")
+        .args(&["--filter", &format!("name={container}")])
+        .args(&["--format", "{{.State}}"])
+        .run_and_get_stdout(verbose)?;
+    ContainerState::new(stdout.trim())
+}
+
+fn path_hash(path: &Path) -> String {
+    sha1_smol::Sha1::from(path.display().to_string().as_bytes())
+        .digest()
+        .to_string()
+        .get(..5)
+        .expect("sha1 is expected to be at least 5 characters long")
+        .to_string()
+}
+
+pub fn remote_identifier(
+    target: &Target,
+    metadata: &CargoMetadata,
+    dirs: &Directories,
+) -> Result<String> {
+    let host_version_meta = rustc::version_meta()?;
+    let commit_hash = host_version_meta
+        .commit_hash
+        .unwrap_or(host_version_meta.short_version_string);
+
+    let workspace_root = &metadata.workspace_root;
+    let package = metadata
+        .packages
+        .iter()
+        .find(|p| p.manifest_path.parent().unwrap() == workspace_root)
+        .unwrap_or_else(|| metadata.packages.get(0).unwrap());
+
+    let name = &package.name;
+    let triple = target.triple();
+    let project_hash = path_hash(&package.manifest_path);
+    let toolchain_hash = path_hash(&dirs.sysroot);
+    Ok(format!(
+        "cross-{name}-{triple}-{project_hash}-{toolchain_hash}-{commit_hash}"
+    ))
+}
+
+#[allow(unused_variables)]
+fn docker_seccomp(
+    docker: &mut Command,
+    engine_type: EngineType,
+    target: &Target,
+    verbose: bool,
+) -> Result<()> {
     // docker uses seccomp now on all installations
     if target.needs_docker_seccomp() {
         let seccomp = if engine_type == EngineType::Docker && cfg!(target_os = "windows") {
@@ -256,7 +659,7 @@ pub fn run(
                 write_file(&path, false)?.write_all(SECCOMP.as_bytes())?;
             }
             #[cfg(target_os = "windows")]
-            if engine_type == EngineType::Podman {
+            if matches!(engine_type, EngineType::Podman | EngineType::PodmanRemote) {
                 // podman weirdly expects a WSL path here, and fails otherwise
                 path = wslpath(&path, verbose)?;
             }
@@ -266,22 +669,41 @@ pub fn run(
         docker.args(&["--security-opt", &format!("seccomp={}", seccomp)]);
     }
 
+    Ok(())
+}
+
+fn user_id() -> String {
+    env::var("CROSS_CONTAINER_UID").unwrap_or_else(|_| id::user().to_string())
+}
+
+fn group_id() -> String {
+    env::var("CROSS_CONTAINER_GID").unwrap_or_else(|_| id::group().to_string())
+}
+
+fn docker_user_id(docker: &mut Command, engine_type: EngineType) {
     // We need to specify the user for Docker, but not for Podman.
     if engine_type == EngineType::Docker {
-        docker.args(&[
-            "--user",
-            &format!(
-                "{}:{}",
-                env::var("CROSS_CONTAINER_UID").unwrap_or_else(|_| id::user().to_string()),
-                env::var("CROSS_CONTAINER_GID").unwrap_or_else(|_| id::group().to_string()),
-            ),
-        ]);
+        docker.args(&["--user", &format!("{}:{}", user_id(), group_id(),)]);
+    }
+}
+
+fn docker_envvars(docker: &mut Command, config: &Config, target: &Target) -> Result<()> {
+    for ref var in config.env_passthrough(target)? {
+        validate_env_var(var)?;
+
+        // Only specifying the environment variable name in the "-e"
+        // flag forwards the value from the parent shell
+        docker.args(&["-e", var]);
     }
 
+    let runner = config.runner(target)?;
+    let cross_runner = format!("CROSS_RUNNER={}", runner.unwrap_or_default());
     docker
+        .args(&["-e", "PKG_CONFIG_ALLOW_CROSS=1"])
         .args(&["-e", "XARGO_HOME=/xargo"])
         .args(&["-e", "CARGO_HOME=/cargo"])
-        .args(&["-e", "CARGO_TARGET_DIR=/target"]);
+        .args(&["-e", "CARGO_TARGET_DIR=/target"])
+        .args(&["-e", &cross_runner]);
 
     if let Some(username) = id::username().unwrap() {
         docker.args(&["-e", &format!("USER={username}")]);
@@ -305,30 +727,61 @@ pub fn run(
         docker.args(&parse_docker_opts(&value)?);
     };
 
-    docker
-        .args(&[
-            "-e",
-            &format!("CROSS_RUNNER={}", runner.unwrap_or_default()),
-        ])
-        .args(&["-v", &format!("{}:/xargo:Z", xargo_dir.display())])
-        .args(&["-v", &format!("{}:/cargo:Z", cargo_dir.display())])
-        // Prevent `bin` from being mounted inside the Docker container.
-        .args(&["-v", "/cargo/bin"]);
-    if mount_volumes {
-        docker.args(&[
-            "-v",
-            &format!("{}:{}:Z", host_root.display(), mount_root.display()),
-        ]);
-    } else {
-        docker.args(&["-v", &format!("{}:/project:Z", host_root.display())]);
-    }
-    docker
-        .args(&["-v", &format!("{}:/rust:Z,ro", sysroot.display())])
-        .args(&["-v", &format!("{}:/target:Z", target_dir.display())]);
+    Ok(())
+}
 
+#[allow(clippy::too_many_arguments)] // TODO: refactor
+fn docker_mount(
+    docker: &mut Command,
+    metadata: &CargoMetadata,
+    config: &Config,
+    target: &Target,
+    cwd: &Path,
+    verbose: bool,
+    mount_cb: impl Fn(&mut Command, &Path, bool) -> Result<PathBuf>,
+    mut store_cb: impl FnMut((String, PathBuf)),
+) -> Result<bool> {
+    let mut mount_volumes = false;
+    // FIXME(emilgardis 2022-04-07): This is a fallback so that if it's hard for us to do mounting logic, make it simple(r)
+    // Preferably we would not have to do this.
+    if cwd.strip_prefix(&metadata.workspace_root).is_err() {
+        mount_volumes = true;
+    }
+
+    for ref var in config.env_volumes(target)? {
+        let (var, value) = validate_env_var(var)?;
+        let value = match value {
+            Some(v) => Ok(v.to_string()),
+            None => env::var(var),
+        };
+
+        if let Ok(val) = value {
+            let mount_path = mount_cb(docker, val.as_ref(), verbose)?;
+            docker.args(&["-e", &format!("{}={}", var, mount_path.display())]);
+            store_cb((val, mount_path));
+            mount_volumes = true;
+        }
+    }
+
+    for path in metadata.path_dependencies() {
+        let mount_path = mount_cb(docker, path, verbose)?;
+        store_cb((path.display().to_string(), mount_path));
+        mount_volumes = true;
+    }
+
+    Ok(mount_volumes)
+}
+
+fn docker_cwd(
+    docker: &mut Command,
+    metadata: &CargoMetadata,
+    dirs: &Directories,
+    cwd: &Path,
+    mount_volumes: bool,
+) -> Result<()> {
     if mount_volumes {
-        docker.args(&["-w".as_ref(), mount_cwd.as_os_str()]);
-    } else if mount_cwd == metadata.workspace_root {
+        docker.args(&["-w".as_ref(), dirs.mount_cwd.as_os_str()]);
+    } else if dirs.mount_cwd == metadata.workspace_root {
         docker.args(&["-w", "/project"]);
     } else {
         // We do this to avoid clashes with path separators. Windows uses `\` as a path separator on Path::join
@@ -343,9 +796,324 @@ pub fn run(
         docker.args(&["-w".as_ref(), mount_wd.as_os_str()]);
     }
 
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)] // TODO: refactor
+fn remote_run(
+    target: &Target,
+    args: &[String],
+    metadata: &CargoMetadata,
+    config: &Config,
+    uses_xargo: bool,
+    sysroot: &Path,
+    verbose: bool,
+    docker_in_docker: bool,
+    cwd: &Path,
+) -> Result<ExitStatus> {
+    let dirs = Directories::create(metadata, cwd, sysroot, docker_in_docker, verbose)?;
+
+    let mut cmd = cargo_cmd(uses_xargo);
+    cmd.args(args);
+
+    let engine = Engine::new(true, verbose)?;
+    let mount_prefix = "/cross";
+
+    // the logic is broken into the following steps
+    // 1. get our unique identifiers and cleanup from a previous run.
+    // 2. create a data volume to store everything
+    // 3. start our container with the data volume and all envvars
+    // 4. copy all mounted volumes over
+    // 5. create symlinks for all mounted data
+    // 6. execute our cargo command inside the container
+    // 7. copy data from target dir back to host
+    // 8. stop container and delete data volume
+    //
+    // we use structs that wrap the resources to ensure they're dropped
+    // in the correct order even on error, to ensure safe cleanup
+
+    // 1. get our unique identifiers and cleanup from a previous run.
+    // this can happen if we didn't gracefully exit before
+    let container = remote_identifier(target, metadata, &dirs)?;
+    let volume = VolumeId::create(&engine, &container, verbose)?;
+    let state = container_state(&engine, &container, verbose)?;
+    if !state.is_stopped() {
+        eprintln!("warning: container {container} was running.");
+        container_stop(&engine, &container, verbose)?;
+    }
+    if state.exists() {
+        eprintln!("warning: container {container} was exited.");
+        container_rm(&engine, &container, verbose)?;
+    }
+    if let VolumeId::Discard(ref id) = volume {
+        if volume_exists(&engine, id, verbose)? {
+            eprintln!("warning: temporary volume {container} existed.");
+            volume_rm(&engine, id, verbose)?;
+        }
+    }
+
+    // 2. create our volume to copy all our data over to
+    if let VolumeId::Discard(ref id) = volume {
+        volume_create(&engine, id, verbose)?;
+    }
+    let _volume_deletter = DeleteVolume(&engine, &volume, verbose);
+
+    // 3. create our start container command here
+    let mut docker = docker_subcommand(&engine, "run");
+    docker.args(&["--userns", "host"]);
+    docker.args(&["--name", &container]);
+    docker.args(&["-v", &format!("{}:{mount_prefix}", volume.as_ref())]);
+    docker_envvars(&mut docker, config, target)?;
+
+    let mut volumes = vec![];
+    let mount_volumes = docker_mount(
+        &mut docker,
+        metadata,
+        config,
+        target,
+        cwd,
+        verbose,
+        |_, val, verbose| remote_mount_path(val, verbose),
+        |(src, dst)| volumes.push((src, dst)),
+    )?;
+
+    docker_seccomp(&mut docker, engine.kind, target, verbose)?;
+
+    // Prevent `bin` from being mounted inside the Docker container.
+    docker.args(&["-v", &format!("{mount_prefix}/cargo/bin")]);
+
     // When running inside NixOS or using Nix packaging we need to add the Nix
     // Store to the running container so it can load the needed binaries.
-    if let Some(nix_store) = nix_store_dir {
+    if let Some(ref nix_store) = dirs.nix_store {
+        volumes.push((nix_store.display().to_string(), nix_store.to_path_buf()))
+    }
+
+    docker.arg("-d");
+    if atty::is(Stream::Stdin) && atty::is(Stream::Stdout) && atty::is(Stream::Stderr) {
+        docker.arg("-t");
+    }
+
+    docker
+        .arg(&image(config, target)?)
+        // ensure the process never exits until we stop it
+        .args(&["sh", "-c", "sleep infinity"])
+        .run_and_get_status(verbose)?;
+    let _container_deletter = DeleteContainer(&engine, &container, verbose);
+
+    // 4. copy all mounted volumes over
+    let copy_cache = env::var("CROSS_REMOTE_COPY_CACHE")
+        .map(|s| bool_from_envvar(&s))
+        .unwrap_or_default();
+    let copy = |src, dst: &PathBuf| {
+        if copy_cache {
+            copy_volume_files(&engine, &container, src, dst, verbose)
+        } else {
+            copy_volume_files_nocache(&engine, &container, src, dst, verbose)
+        }
+    };
+    let mount_prefix_path = mount_prefix.as_ref();
+    if let VolumeId::Discard(_) = volume {
+        copy_volume_xargo(
+            &engine,
+            &container,
+            &dirs.xargo,
+            target,
+            mount_prefix_path,
+            verbose,
+        )?;
+        copy_volume_cargo(
+            &engine,
+            &container,
+            &dirs.cargo,
+            mount_prefix_path,
+            false,
+            verbose,
+        )?;
+        copy_volume_rust(
+            &engine,
+            &container,
+            &dirs.sysroot,
+            target,
+            mount_prefix_path,
+            verbose,
+        )?;
+    }
+    let mount_root = if mount_volumes {
+        // cannot panic: absolute unix path, must have root
+        let rel_mount_root = dirs.mount_root.strip_prefix("/").unwrap();
+        let mount_root = mount_prefix_path.join(rel_mount_root);
+        if rel_mount_root != PathBuf::new() {
+            create_volume_dir(&engine, &container, mount_root.parent().unwrap(), verbose)?;
+        }
+        mount_root
+    } else {
+        mount_prefix_path.join("project")
+    };
+    copy(&dirs.host_root, &mount_root)?;
+
+    let mut copied = vec![
+        (&dirs.xargo, mount_prefix_path.join("xargo")),
+        (&dirs.cargo, mount_prefix_path.join("cargo")),
+        (&dirs.sysroot, mount_prefix_path.join("rust")),
+        (&dirs.host_root, mount_root.clone()),
+    ];
+    let mut to_symlink = vec![];
+    let target_dir = file::canonicalize(&dirs.target)?;
+    let target_dir = if let Ok(relpath) = target_dir.strip_prefix(&dirs.host_root) {
+        // target dir is in the project, just symlink it in
+        let target_dir = mount_root.join(relpath);
+        to_symlink.push((target_dir.clone(), "/target".to_string()));
+        target_dir
+    } else {
+        // outside project, need to copy the target data over
+        // only do if we're copying over cached files.
+        let target_dir = mount_prefix_path.join("target");
+        if copy_cache {
+            copy(&dirs.target, &target_dir)?;
+        } else {
+            create_volume_dir(&engine, &container, &target_dir, verbose)?;
+        }
+
+        copied.push((&dirs.target, target_dir.clone()));
+        target_dir
+    };
+    for (src, dst) in volumes.iter() {
+        let src: &Path = src.as_ref();
+        if let Some((psrc, pdst)) = copied.iter().find(|(p, _)| src.starts_with(p)) {
+            // path has already been copied over
+            let relpath = src.strip_prefix(psrc).unwrap();
+            to_symlink.push((pdst.join(relpath), dst.display().to_string()));
+        } else {
+            let rel_dst = dst.strip_prefix("/").unwrap();
+            let mount_dst = mount_prefix_path.join(rel_dst);
+            if rel_dst != PathBuf::new() {
+                create_volume_dir(&engine, &container, mount_dst.parent().unwrap(), verbose)?;
+            }
+            copy(src, &mount_dst)?;
+        }
+    }
+
+    // 5. create symlinks for copied data
+    let mut symlink = vec!["set -e pipefail".to_string()];
+    if verbose {
+        symlink.push("set -x".to_string());
+    }
+    symlink.push(format!(
+        "chown -R {uid}:{gid} {mount_prefix}/*",
+        uid = user_id(),
+        gid = group_id(),
+    ));
+    // need a simple script to add symlinks, but not override existing files.
+    symlink.push(format!(
+        "prefix=\"{mount_prefix}\"
+
+symlink_recurse() {{
+    for f in \"${{1}}\"/*; do
+        dst=${{f#\"$prefix\"}}
+        if [ -f \"${{dst}}\" ]; then
+            echo \"invalid: got unexpected file at ${{dst}}\" 1>&2
+            exit 1
+        elif [ -d \"${{dst}}\" ]; then
+            symlink_recurse \"${{f}}\"
+        else
+            ln -s \"${{f}}\" \"${{dst}}\"
+        fi
+    done
+}}
+
+symlink_recurse \"${{prefix}}\"
+"
+    ));
+    for (src, dst) in to_symlink {
+        symlink.push(format!("ln -s \"{}\" \"{}\"", src.display(), dst));
+    }
+    docker_subcommand(&engine, "exec")
+        .arg(&container)
+        .args(&["sh", "-c", &symlink.join("\n")])
+        .run_and_get_status(verbose)?;
+
+    // 6. execute our cargo command inside the container
+    let mut docker = docker_subcommand(&engine, "exec");
+    docker_user_id(&mut docker, engine.kind);
+    docker_cwd(&mut docker, metadata, &dirs, cwd, mount_volumes)?;
+    docker.arg(&container);
+    docker.args(&["sh", "-c", &format!("PATH=$PATH:/rust/bin {:?}", cmd)]);
+    let status = docker.run_and_get_status(verbose);
+
+    // 7. copy data from our target dir back to host
+    docker_subcommand(&engine, "cp")
+        .arg("-a")
+        .arg(&format!("{container}:{}", target_dir.display()))
+        .arg(&dirs.target.parent().unwrap())
+        .run_and_get_status(verbose)?;
+
+    status
+}
+
+#[allow(clippy::too_many_arguments)] // TODO: refactor
+fn local_run(
+    target: &Target,
+    args: &[String],
+    metadata: &CargoMetadata,
+    config: &Config,
+    uses_xargo: bool,
+    sysroot: &Path,
+    verbose: bool,
+    docker_in_docker: bool,
+    cwd: &Path,
+) -> Result<ExitStatus> {
+    let dirs = Directories::create(metadata, cwd, sysroot, docker_in_docker, verbose)?;
+
+    let mut cmd = cargo_cmd(uses_xargo);
+    cmd.args(args);
+
+    let engine = Engine::new(false, verbose)?;
+
+    let mut docker = docker_subcommand(&engine, "run");
+    docker.args(&["--userns", "host"]);
+    docker_envvars(&mut docker, config, target)?;
+
+    let mount_volumes = docker_mount(
+        &mut docker,
+        metadata,
+        config,
+        target,
+        cwd,
+        verbose,
+        |docker, val, verbose| mount(docker, val, "", verbose),
+        |_| {},
+    )?;
+
+    docker.arg("--rm");
+
+    docker_seccomp(&mut docker, engine.kind, target, verbose)?;
+    docker_user_id(&mut docker, engine.kind);
+
+    docker
+        .args(&["-v", &format!("{}:/xargo:Z", dirs.xargo.display())])
+        .args(&["-v", &format!("{}:/cargo:Z", dirs.cargo.display())])
+        // Prevent `bin` from being mounted inside the Docker container.
+        .args(&["-v", "/cargo/bin"]);
+    if mount_volumes {
+        docker.args(&[
+            "-v",
+            &format!(
+                "{}:{}:Z",
+                dirs.host_root.display(),
+                dirs.mount_root.display()
+            ),
+        ]);
+    } else {
+        docker.args(&["-v", &format!("{}:/project:Z", dirs.host_root.display())]);
+    }
+    docker
+        .args(&["-v", &format!("{}:/rust:Z,ro", dirs.sysroot.display())])
+        .args(&["-v", &format!("{}:/target:Z", dirs.target.display())]);
+    docker_cwd(&mut docker, metadata, &dirs, cwd, mount_volumes)?;
+
+    // When running inside NixOS or using Nix packaging we need to add the Nix
+    // Store to the running container so it can load the needed binaries.
+    if let Some(ref nix_store) = dirs.nix_store {
         docker.args(&[
             "-v",
             &format!("{}:{}:Z", nix_store.display(), nix_store.display()),
@@ -363,6 +1131,46 @@ pub fn run(
         .arg(&image(config, target)?)
         .args(&["sh", "-c", &format!("PATH=$PATH:/rust/bin {:?}", cmd)])
         .run_and_get_status(verbose)
+}
+
+#[allow(clippy::too_many_arguments)] // TODO: refactor
+pub fn run(
+    target: &Target,
+    args: &[String],
+    metadata: &CargoMetadata,
+    config: &Config,
+    uses_xargo: bool,
+    sysroot: &Path,
+    verbose: bool,
+    docker_in_docker: bool,
+    is_remote: bool,
+    cwd: &Path,
+) -> Result<ExitStatus> {
+    if is_remote {
+        remote_run(
+            target,
+            args,
+            metadata,
+            config,
+            uses_xargo,
+            sysroot,
+            verbose,
+            docker_in_docker,
+            cwd,
+        )
+    } else {
+        local_run(
+            target,
+            args,
+            metadata,
+            config,
+            uses_xargo,
+            sysroot,
+            verbose,
+            docker_in_docker,
+            cwd,
+        )
+    }
 }
 
 pub fn image(config: &Config, target: &Target) -> Result<String> {
