@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - #775 - forward Cargo exit code to host
 - #772 - added `CROSS_CONTAINER_OPTS` environment variable to replace `DOCKER_OPTS`.
 - #767, #788 - added the `cross-util` and `xtask` commands.
+- #754 - Add `Cargo.toml` as configuration source
 - #745 - added `thumbv7neon-*` targets.
 - #741 - added `armv7-unknown-linux-gnueabi` and `armv7-unknown-linux-musleabi` targets.
 - #721 - add support for running doctests on nightly if `CROSS_UNSTABLE_ENABLE_DOCTESTS=true`.

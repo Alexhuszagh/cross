@@ -2,7 +2,7 @@
 
 use crate::errors::*;
 use crate::{Target, TargetList};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::{BTreeSet, HashMap};
 
 /// Environment configuration
@@ -49,11 +49,33 @@ pub struct CrossToml {
 impl CrossToml {
     /// Parses the [`CrossToml`] from a string
     pub fn parse(toml_str: &str) -> Result<(Self, BTreeSet<String>)> {
-        let tomld = &mut toml::Deserializer::new(toml_str);
+        let mut tomld = toml::Deserializer::new(toml_str);
+        Self::parse_from_deserializer(&mut tomld)
+    }
 
+    /// Parses the [`CrossToml`] from a string containing the Cargo.toml contents
+    pub fn parse_from_cargo(cargo_toml_str: &str) -> Result<Option<(Self, BTreeSet<String>)>> {
+        let cargo_toml: toml::Value = toml::from_str(cargo_toml_str)?;
+        let cross_metadata_opt = cargo_toml
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("cross"));
+
+        if let Some(cross_meta) = cross_metadata_opt {
+            Ok(Some(Self::parse_from_deserializer(cross_meta.clone())?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Parses the [`CrossToml`] from a [`Deserializer`]
+    fn parse_from_deserializer<'de, D>(deserializer: D) -> Result<(Self, BTreeSet<String>)>
+    where
+        D: Deserializer<'de>,
+        D::Error: Send + Sync + 'static,
+    {
         let mut unused = BTreeSet::new();
-
-        let cfg = serde_ignored::deserialize(tomld, |path| {
+        let cfg = serde_ignored::deserialize(deserializer, |path| {
             unused.insert(path.to_string());
         })?;
 
@@ -231,6 +253,59 @@ mod tests {
 
         assert_eq!(parsed_cfg, cfg);
         assert!(unused.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn parse_from_empty_cargo_toml() -> Result<()> {
+        let test_str = r#"
+          [package]
+          name = "cargo_toml_test_package"
+          version = "0.1.0"
+
+          [dependencies]
+          cross = "1.2.3"
+        "#;
+
+        let res = CrossToml::parse_from_cargo(test_str)?;
+        assert!(res.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    pub fn parse_from_cargo_toml() -> Result<()> {
+        let cfg = CrossToml {
+            targets: HashMap::new(),
+            build: CrossBuildConfig {
+                env: CrossEnvConfig {
+                    passthrough: vec![],
+                    volumes: vec![],
+                },
+                build_std: None,
+                xargo: Some(true),
+                default_target: None,
+            },
+        };
+
+        let test_str = r#"
+          [package]
+          name = "cargo_toml_test_package"
+          version = "0.1.0"
+
+          [dependencies]
+          cross = "1.2.3"
+
+          [package.metadata.cross.build]
+          xargo = true
+        "#;
+
+        if let Some((parsed_cfg, _unused)) = CrossToml::parse_from_cargo(test_str)? {
+            assert_eq!(parsed_cfg, cfg);
+        } else {
+            panic!("Parsing result is None");
+        }
 
         Ok(())
     }
