@@ -559,7 +559,7 @@ fn toml(metadata: &CargoMetadata) -> Result<Option<CrossToml>> {
             })?;
 
             if let Some(cfg) = cargo_cross_cfg {
-                Ok(Some(cfg.merge(&config)?))
+                Ok(Some(cfg.merge(config)?))
             } else {
                 Ok(Some(config))
             }
