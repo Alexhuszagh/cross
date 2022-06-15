@@ -37,7 +37,7 @@ use std::process::ExitStatus;
 
 use config::Config;
 use rustc_version::Channel;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 
 pub use self::cargo::{cargo_metadata_with_args, CargoMetadata, Subcommand};
 use self::cross_toml::CrossToml;
@@ -274,6 +274,15 @@ impl From<String> for Target {
     fn from(target_str: String) -> Target {
         let target_host: Host = target_str.as_str().into();
         target_host.into()
+    }
+}
+
+impl Serialize for Target {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Target::BuiltIn { triple } => serializer.serialize_str(triple),
+            Target::Custom { triple } => serializer.serialize_str(triple),
+        }
     }
 }
 
@@ -515,9 +524,12 @@ pub(crate) fn warn_host_version_mismatch(
 /// Obtains the [`CrossToml`] from one of the possible locations
 ///
 /// These locations are checked in the following order:
-/// 1. Package metadata in the Cargo.toml
-/// 2. If the `CROSS_CONFIG` variable is set, it tries to read the config from its value
-/// 3. Otherwise, the `Cross.toml` in the project root is set.
+/// 1. If the `CROSS_CONFIG` variable is set, it tries to read the config from its value
+/// 2. Otherwise, the `Cross.toml` in the project root is used
+/// 3. Package metadata in the Cargo.toml
+///
+/// The values from `CROSS_CONFIG` or `Cross.toml` are concatenated with the package
+/// metadata in `Cargo.toml`, with `Cross.toml` having the highest priority.
 fn toml(metadata: &CargoMetadata) -> Result<Option<CrossToml>> {
     let root = &metadata.workspace_root;
     let cross_config_path = match env::var("CROSS_CONFIG") {
@@ -534,11 +546,7 @@ fn toml(metadata: &CargoMetadata) -> Result<Option<CrossToml>> {
         cross_config_path.exists(),
         cargo_cross_toml_opt.map(|(cfg, _)| cfg),
     ) {
-        (true, Some(_)) => {
-            eprintln!("Found a cross configuration (e.g. Cross.toml) and a configuration in your Cargo.toml. Please use only one of these options.");
-            Ok(None)
-        }
-        (true, None) => {
+        (true, cargo_cross_cfg) => {
             let content = file::read(&cross_config_path).wrap_err_with(|| {
                 format!("could not read file `{}`", cross_config_path.display())
             })?;
@@ -550,7 +558,11 @@ fn toml(metadata: &CargoMetadata) -> Result<Option<CrossToml>> {
                 )
             })?;
 
-            Ok(Some(config))
+            if let Some(cfg) = cargo_cross_cfg {
+                Ok(Some(cfg.merge(&config)?))
+            } else {
+                Ok(Some(config))
+            }
         }
         (false, Some(cfg)) => Ok(Some(cfg)),
         (false, None) => {
