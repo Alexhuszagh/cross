@@ -117,30 +117,48 @@ impl CrossToml {
             Ok(serde_json::from_value(value)?)
         }
 
+        // merge 2 objects. y has precedence over x.
+        fn merge_objects(x: &mut ValueMap, y: &ValueMap) -> Option<()> {
+            // we need to iterate over both keys, so we need a full deduplication
+            let keys: BTreeSet<String> = x.keys().chain(y.keys()).cloned().collect();
+            for key in keys {
+                let in_x = x.contains_key(&key);
+                let in_y = y.contains_key(&key);
+                if !in_x && in_y {
+                    let yk = y[&key].clone();
+                    x.insert(key, yk);
+                    continue;
+                } else if !in_y {
+                    continue;
+                }
+
+                let xk = x.get_mut(&key)?;
+                let yk = y.get(&key)?;
+                if xk.is_null() && !yk.is_null() {
+                    *xk = yk.clone();
+                    continue;
+                } else if yk.is_null() {
+                    continue;
+                }
+
+                // now we've filtered out missing keys and optional values
+                // all key/value pairs should be same type.
+                if xk.is_object() {
+                    merge_objects(xk.as_object_mut()?, yk.as_object()?)?;
+                } else if xk.is_array() {
+                    xk.as_array_mut()?.extend_from_slice(yk.as_array()?);
+                } else {
+                    *xk = yk.clone();
+                }
+            }
+
+            Some(())
+        }
+
         // Builds maps of objects
         let mut self_map = to_map(&self)?;
         let other_map = to_map(other)?;
-        let cfg_fields: Vec<String> = self_map.keys().cloned().collect();
-
-        // Iterates over and merges config fields
-        for field in cfg_fields.iter() {
-            let self_sub_map = self_map.get_mut(field).unwrap().as_object_mut().unwrap();
-            let mut other_sub_map = other_map
-                .get(field)
-                .cloned()
-                .unwrap()
-                .as_object_mut()
-                .unwrap()
-                .to_owned();
-
-            // Only retain fields in the build config that have a value
-            if field == "build" {
-                other_sub_map.retain(|_, v| !v.is_null());
-            }
-
-            self_sub_map.extend(other_sub_map);
-        }
-
+        merge_objects(&mut self_map, &other_map).ok_or(eyre::eyre!("unexpected logic error"))?;
         from_map(self_map)
     }
 
@@ -482,8 +500,8 @@ mod tests {
             },
             CrossTargetConfig {
                 env: CrossEnvConfig {
-                    passthrough: vec!["VAR2_PRECEDENCE".to_string()],
-                    volumes: vec!["VOL2_ARG_PRECEDENCE".to_string()],
+                    passthrough: vec!["VAR2".to_string(), "VAR2_PRECEDENCE".to_string()],
+                    volumes: vec!["VOL2_ARG".to_string(), "VOL2_ARG_PRECEDENCE".to_string()],
                 },
                 xargo: Some(false),
                 build_std: Some(false),
@@ -511,7 +529,12 @@ mod tests {
             targets: targets_expected,
             build: CrossBuildConfig {
                 env: CrossEnvConfig {
-                    passthrough: vec!["VAR3".to_string(), "VAR4".to_string()],
+                    passthrough: vec![
+                        "VAR1".to_string(),
+                        "VAR2".to_string(),
+                        "VAR3".to_string(),
+                        "VAR4".to_string(),
+                    ],
                     volumes: vec![],
                 },
                 build_std: Some(true),
