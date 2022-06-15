@@ -18,6 +18,12 @@ pub struct ListImages {
     pub engine: Option<String>,
 }
 
+impl ListImages {
+    pub fn run(self, engine: cross::docker::Engine) -> cross::Result<()> {
+        list_images(self, &engine)
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct RemoveImages {
     /// If not provided, remove all images.
@@ -39,6 +45,16 @@ pub struct RemoveImages {
     pub engine: Option<String>,
 }
 
+impl RemoveImages {
+    pub fn run(self, engine: cross::docker::Engine) -> cross::Result<()> {
+        if self.targets.is_empty() {
+            remove_all_images(self, &engine)
+        } else {
+            remove_target_images(self, &engine)
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Images {
     /// List cross images in local storage.
@@ -50,14 +66,8 @@ pub enum Images {
 impl Images {
     pub fn run(self, engine: cross::docker::Engine) -> cross::Result<()> {
         match self {
-            Images::List(args) => list_images(args, &engine),
-            Images::Remove(args) => {
-                if args.targets.is_empty() {
-                    remove_all_images(args, &engine)
-                } else {
-                    remove_target_images(args, &engine)
-                }
-            }
+            Images::List(args) => args.run(engine),
+            Images::Remove(args) => args.run(engine),
         }
     }
 
