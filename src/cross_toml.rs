@@ -117,23 +117,31 @@ impl CrossToml {
             Ok(serde_json::from_value(value)?)
         }
 
-        // Merges both target maps
-        let mut self_targets_map = to_map(&self.targets)?;
-        let other_targets_map = to_map(&other.targets)?;
-        self_targets_map.extend(other_targets_map);
-        let merged_targets = from_map(self_targets_map)?;
+        // Builds maps of objects
+        let mut self_map = to_map(&self)?;
+        let other_map = to_map(other)?;
+        let cfg_fields: Vec<String> = self_map.keys().cloned().collect();
 
-        // Merges build configs
-        let mut self_build_cfg_map = to_map(&self.build)?;
-        let mut other_build_cfg_map = to_map(&other.build)?;
-        other_build_cfg_map.retain(|_, v| !v.is_null());
-        self_build_cfg_map.extend(other_build_cfg_map);
-        let merged_build_cfg = from_map(self_build_cfg_map)?;
+        // Iterates over and merges config fields
+        for field in cfg_fields.iter() {
+            let self_sub_map = self_map.get_mut(field).unwrap().as_object_mut().unwrap();
+            let mut other_sub_map = other_map
+                .get(field)
+                .cloned()
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .to_owned();
 
-        Ok(CrossToml {
-            targets: merged_targets,
-            build: merged_build_cfg,
-        })
+            // Only retain fields in the build config that have a value
+            if field == "build" {
+                other_sub_map.retain(|_, v| !v.is_null());
+            }
+
+            self_sub_map.extend(other_sub_map);
+        }
+
+        from_map(self_map)
     }
 
     /// Returns the `target.{}.image` part of `Cross.toml`
@@ -512,7 +520,7 @@ mod tests {
             },
         };
 
-        let cfg_merged = cfg1.merge(&cfg2).unwrap();
+        let cfg_merged = cfg1.merge(cfg2).unwrap();
         assert_eq!(cfg_expected, cfg_merged);
 
         Ok(())
