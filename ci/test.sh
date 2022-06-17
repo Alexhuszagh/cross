@@ -33,7 +33,7 @@ main() {
 
     # ensure we have the proper toolchain and optional rust flags
     export CROSS=("${project_home}/target/debug/cross")
-    export CROSS_FLAGS=""
+    export CROSS_FLAGS="-v"
     if (( ${BUILD_STD:-0} )); then
         # use build-std instead of xargo, due to xargo being
         # maintenance-only. build-std requires a nightly compiler
@@ -48,7 +48,7 @@ main() {
 
     if (( ${STD:-0} )); then
         # test `cross check`
-        td=$(mktemp -d)
+        td=$(mkcargotemp -d)
         cargo init --lib --name foo "${td}"
         pushd "${td}"
         echo '#![no_std]' > src/lib.rs
@@ -57,7 +57,7 @@ main() {
         rm -rf "${td}"
     else
         # `cross build` test for targets where `std` is not available
-        td=$(mktemp -d)
+        td=$(mkcargotemp -d)
 
         git clone \
             --depth 1 \
@@ -78,7 +78,7 @@ main() {
 
     # `cross build` test for the other targets
     if [[ "${TARGET}" == *-unknown-emscripten ]]; then
-        td=$(mktemp -d)
+        td=$(mkcargotemp -d)
 
         pushd "${td}"
         cargo init --lib --name foo .
@@ -88,7 +88,7 @@ main() {
 
         rm -rf "${td}"
     elif [[ "${TARGET}" != thumb* ]]; then
-        td=$(mktemp -d)
+        td=$(mkcargotemp -d)
 
         pushd "${td}"
         # test that linking works
@@ -103,7 +103,7 @@ main() {
     if (( ${RUN:-0} )); then
         # `cross test` test
         if (( ${DYLIB:-0} )); then
-            td=$(mktemp -d)
+            td=$(mkcargotemp -d)
 
             pushd "${td}"
             cargo init --lib --name foo .
@@ -117,7 +117,7 @@ main() {
         # `cross run` test
         case "${TARGET}" in
             thumb*-none-eabi*)
-                td=$(mktemp -d)
+                td=$(mkcargotemp -d)
 
                 git clone \
                     --depth 1 \
@@ -131,7 +131,7 @@ main() {
                 rm -rf "${td}"
             ;;
             *)
-                td=$(mktemp -d)
+                td=$(mkcargotemp -d)
 
                 cargo init --bin --name hello "${td}"
 
@@ -146,7 +146,7 @@ main() {
                 popd
 
                 rm -rf "${td}"
-                td=$(mktemp -d)
+                td=$(mkcargotemp -d)
                 git clone \
                     --depth 1 \
                     --recursive \
@@ -168,7 +168,7 @@ main() {
 
     # Test C++ support
     if (( ${CPP:-0} )); then
-        td="$(mktemp -d)"
+        td="$(mkcargotemp -d)"
 
         git clone --depth 1 https://github.com/cross-rs/rust-cpp-hello-word "${td}"
 

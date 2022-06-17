@@ -40,7 +40,7 @@ main() {
 
 cross_test_cpp() {
     local td=
-    td="$(mktemp -d)"
+    td="$(mkcargotemp -d)"
 
     git clone --depth 1 https://github.com/cross-rs/rust-cpp-hello-word "${td}"
 
