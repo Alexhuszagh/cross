@@ -159,6 +159,19 @@ fn container_path_exists(
         .success())
 }
 
+fn container_directory_remove(
+    engine: &Engine,
+    container: &str,
+    path: &Path,
+    verbose: bool,
+) -> Result<bool> {
+    Ok(subcommand(engine, "exec")
+        .arg(container)
+        .args(&["bash", "-c", &format!("rm -rf '{}'", path.as_posix()?)])
+        .run_and_get_status(verbose, true)?
+        .success())
+}
+
 // copy files for a docker volume, for remote host support
 fn copy_volume_files_nocache(
     engine: &Engine,
@@ -645,6 +658,7 @@ pub(crate) fn run(
     } else {
         mount_prefix_path.join("project")
     };
+    container_directory_remove(engine, &container, &mount_root, verbose)?;
     copy(&dirs.host_root, &mount_root)?;
 
     let mut copied = vec![
