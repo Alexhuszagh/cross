@@ -6,6 +6,21 @@ set -euo pipefail
 # shellcheck disable=SC1091
 . lib.sh
 
+IS_TTY=false
+if [[ -t 1 ]] && [[ -t 2 ]]; then
+    IS_TTY=true
+fi
+
+silence_if_not_tty() {
+    set +x
+    if [[ "$IS_TTY" = "true" ]]; then
+        "${@}"
+    else
+        "${@}" &> /dev/null
+    fi
+    set -x
+}
+
 main() {
     local config="${1}"
     local nproc="${2}"
@@ -74,15 +89,16 @@ main() {
         # timeout is a command, not a built-in, so it won't
         # work with any bash functions: must call a command.
         timeout "${timeout}" \
-            su "${username}" -c \
-            "STOP=${step} CT_DEBUG_CT_SAVE_STEPS=1 ${crosstooldir}/bin/ct-ng build.${nproc} &> /dev/null"
+            silence_if_not_tty su "${username}" -c \
+            "STOP=${step} CT_DEBUG_CT_SAVE_STEPS=1 ${crosstooldir}/bin/ct-ng build.${nproc}"
     }
 
     while download; [ $? -eq 124 ]; do
         # Indicates a timeout, repeat the command.
         sleep "${sleep}"
     done
-    su "${username}" -c "CT_DEBUG_CT_SAVE_STEPS=1 ${crosstooldir}/bin/ct-ng build.${nproc} &> /dev/null"
+    silence_if_not_tty su "${username}" -c \
+        "CT_DEBUG_CT_SAVE_STEPS=1 ${crosstooldir}/bin/ct-ng build.${nproc}"
 
     popd
 
