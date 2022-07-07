@@ -1,7 +1,6 @@
 # Change Log
 
-All notable changes to this project will be documented in this file. This is an automatically-generated document: entries are added via changesets present in the `.changes` directory.
-This project adheres to [Semantic Versioning](http://semver.org/).
+This is a template changelog. This represents an older state of this repository, used to test parsing/formatting.
 
 <!-- next-header -->
 
@@ -9,12 +8,10 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 
-- #913 - added the `x86_64-unknown-illumos` target.
 - #905 - added `qemu-runner` for musl images, allowing use of native or emulated runners.
 - #905 - added qemu emulation to `i586-unknown-linux-gnu`, `i686-unknown-linux-musl`, and `i586-unknown-linux-gnu`, so they can run on an `x86` CPU, rather than an `x86_64` CPU.
-- #905 - added `qemu-runner` for musl images, allowing use of native or emulated runners.
 - #900 - add the option to skip copying build artifacts back to host when using remote cross via `CROSS_REMOTE_SKIP_BUILD_ARTIFACTS`.
-- #891 - support custom user namespace overrides by setting the `CROSS_CONTAINER_USER_NAMESPACE` environment variable.
+- #891 - support custom user namespace overrides by setting the `CROSS_CONTAINER_USER_NAMESPACE` environment variable. 
 - #890 - support rootless docker via the `CROSS_ROOTLESS_CONTAINER_ENGINE` environment variable.
 - #878 - added an image `ghcr.io/cross-rs/cross` containing cross.
 
@@ -26,18 +23,14 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ### Fixed
 
 - #905 - fixed running dynamically-linked libraries for all musl targets except `x86_64-unknown-linux-musl`.
-- #904 - fixed the path for workspace volumes and passthrough volumes with docker-in-docker.
 - #904 - ensure `cargo metadata` works by using the same channel.
+- #904 - fixed the path for workspace volumes and passthrough volumes with docker-in-docker.
 - #898 - fix the path to the mount root with docker-in-docker if mounting volumes.
 - #897 - ensure `target.$(...)` config options override `build` ones when parsing strings and vecs.
 - #895 - convert filenames in docker tags to ASCII lowercase and ignore invalid characters
 - #885 - handle symlinks when using remote docker.
 - #868 - ignore the `CARGO` environment variable.
 - #867 - fixed parsing of `build.env.passthrough` config values.
-
-### Internal
-
-- #918 - use JSON-based files to autogenerate CHANGELOG.md
 
 <!-- last-header -->
 

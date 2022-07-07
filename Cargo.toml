@@ -70,6 +70,7 @@ dev-version = false
 push = false
 publish = false
 tag = false
+pre-release-hook = ["cargo", "xtask", "build-changelog"]
 pre-release-commit-message = "release version {{version}}"
 
 [[package.metadata.release.pre-release-replacements]]
