@@ -497,7 +497,7 @@ pub fn build_changelog(
     let output = build_changelog_from_dir(&root, &changes_dir)?;
 
     let filename = match (dry_run, release) {
-        (true, Some(version)) => {
+        (false, Some(version)) => {
             move_changes(&root, &version)?;
             "CHANGELOG.md"
         }
