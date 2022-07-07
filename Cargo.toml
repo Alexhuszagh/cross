@@ -25,7 +25,7 @@ default = []
 dev = []
 
 [workspace]
-members = ["xtask"]
+members = ["changeset", "xtask"]
 
 [dependencies]
 atty = "0.2"

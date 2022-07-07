@@ -1,5 +1,3 @@
-#![allow(unused)] // TODO(ahuszagh) Remove
-
 use std::cmp;
 use std::fmt;
 use std::fs;
@@ -199,26 +197,6 @@ struct ChangelogEntry {
 }
 
 impl ChangelogEntry {
-    fn id(&self) -> &IdType {
-        &self.id
-    }
-
-    fn description(&self) -> &str {
-        &self.contents.description
-    }
-
-    fn issues(&self) -> &[u64] {
-        &self.contents.issues
-    }
-
-    fn breaking(&self) -> &bool {
-        &self.contents.breaking
-    }
-
-    fn kind(&self) -> &ChangelogType {
-        &self.contents.kind
-    }
-
     fn new(id: IdType, contents: ChangelogContents) -> Self {
         Self { id, contents }
     }
@@ -351,10 +329,6 @@ fn file_stem(path: &Path) -> cross::Result<&str> {
         .to_utf8()
 }
 
-fn number_cmp(x: Option<u64>, y: Option<u64>) -> cmp::Ordering {
-    y.cmp(&x)
-}
-
 fn read_changes(changes_dir: &Path) -> cross::Result<Changes> {
     let mut changes = Changes::default();
     for entry in fs::read_dir(changes_dir)? {
@@ -447,7 +421,6 @@ fn move_changes(root: &Path, version: &str) -> cross::Result<()> {
         let dstpath = dst.join(entry.file_name());
         let ext = srcpath.extension();
         if file_type.is_file() && ext.map_or(false, |v| v == "json") {
-            let stem = file_stem(&srcpath)?;
             fs::rename(srcpath, dstpath)?;
         }
     }

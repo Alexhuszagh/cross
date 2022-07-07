@@ -1,0 +1,14 @@
+[package]
+documentation = "https://github.com/cross-rs/cross"
+license = "MIT OR Apache-2.0"
+name = "changeset"
+repository = "https://github.com/cross-rs/cross"
+version = "0.0.0-dev.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+clap = { version = "3.2.2", features = ["derive", "env", "unstable-v4"] }
+toml = "0.5"
+
+# TODO(ahuszagh) Want no dependencies for this I believe.
