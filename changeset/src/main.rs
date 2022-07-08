@@ -1,9 +1,29 @@
+#![deny(missing_debug_implementations, rust_2018_idioms)]
+#![warn(
+    clippy::explicit_into_iter_loop,
+    clippy::explicit_iter_loop,
+    clippy::implicit_clone,
+    clippy::inefficient_to_string,
+    clippy::map_err_ignore,
+    clippy::map_unwrap_or,
+    clippy::ref_binding_to_reference,
+    clippy::semicolon_if_nothing_returned,
+    clippy::str_to_string,
+    clippy::string_to_string,
+    // needs clippy 1.61 clippy::unwrap_used
+)]
+#![allow(unused)] // TODO(ahuszagh) Remove this
+
 use std::cmp;
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
 use clap::Args;
+
+mod format;
+mod git;
+mod id;
 
 #[derive(Args, Debug)]
 pub struct BuildChangelog {
@@ -39,62 +59,14 @@ pub struct ValidateChangelog {
     pub color: Option<String>,
 }
 
-pub fn main() {}
+pub fn main() -> eyre::Result<()> {
+    color_eyre::config::HookBuilder::new()
+        .display_env_section(false)
+        .install()?;
 
-
-// the type for the identifier: if it's a PR, sort
-// by the number, otherwise, sort as 0. the numbers
-// should be sorted, and the `max(values) || 0` should
-// be used
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum IdType {
-    PullRequest(Vec<u64>),
-    Issue(Vec<u64>),
+    Ok(())
 }
 
-// TODO(ahuszagh) Should have a validator or parser type
-
-impl IdType {
-    fn numbers(&self) -> &[u64] {
-        match self {
-            IdType::PullRequest(v) => v,
-            IdType::Issue(v) => v,
-        }
-    }
-
-    fn max_number(&self) -> u64 {
-        self.numbers().iter().max().map_or_else(|| 0, |v| *v)
-    }
-
-    // TODO(ahuszagh) Probably need a commit-based formatter.
-
-    fn parse_stem(file_stem: &str) -> cross::Result<IdType> {
-        let (is_issue, rest) = match file_stem.strip_prefix("issue") {
-            Some(n) => (true, n),
-            None => (false, file_stem),
-        };
-        let mut numbers = rest
-            .split('-')
-            .map(|x| x.parse::<u64>())
-            .collect::<Result<Vec<u64>, _>>()?;
-        numbers.sort_unstable();
-
-        Ok(match is_issue {
-            false => IdType::PullRequest(numbers),
-            true => IdType::Issue(numbers),
-        })
-    }
-
-    fn parse_changelog(prs: &str) -> cross::Result<IdType> {
-        let mut numbers = prs
-            .split(',')
-            .map(|x| x.trim().parse::<u64>())
-            .collect::<Result<Vec<u64>, _>>()?;
-        numbers.sort_unstable();
-
-        Ok(IdType::PullRequest(numbers))
-    }
-}
 
 // TODO(ahuszagh) Need these..
 // TODO(ahuszagh) Need a toml config file.
