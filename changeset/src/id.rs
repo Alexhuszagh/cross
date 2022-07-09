@@ -1,98 +1,142 @@
-// TODO(ahuszagh) This needs custom parsers.
-//
+use std::fmt;
 
-// the type for the identifier: if it's a PR,
-// issue, commit hash, or other. this ID can
-// be sorted to generate the changelog, or use
-// the default sort order.
-// TODO(ahuszagh) Hash should sort by the value
-//  in the git history
-//      AKA, git rev-hash
+use crate::git::{self, CommitVec};
+use crate::pattern::extract_unescaped_at_end;
+use crate::util::{SortOrder, Utf8};
+
+use eyre::Result;
+
+// TODO(ahuszagh) This needs custom parsers.
+// TODO(ahuszagh) This needs an optional prefix for each item
+//  {#number[,]}
+//  First has to be the control symbol
+//      Must be a symbol
+
+/// The identifier type for the changelog entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Identifier {
-    PullRequest(Vec<u64>),
-    Issue(Vec<u64>),
-    Commit(Vec<u64>),
-    Other(Vec<String>),
+pub enum Identifier<'a> {
+    /// A number associated with the entry.
+    /// This may be a PR or issue number.
+    Number(Vec<u64>),
+    /// A Git commit for the entry.
+    /// These are sorted by the order of the commits.
+    Commit(CommitVec),
+    /// Another valid identifier.
+    Other(&'a str),
 }
 
-impl Identifier {
-    fn is_pull_request(&self) -> bool {
-        matches!(self, Identifier::PullRequest(_))
+impl<'a> Identifier<'a> {
+    /// If the identifier is a number.
+    pub fn is_number(&self) -> bool {
+        matches!(self, Identifier::Number(_))
     }
 
-    fn is_issue(&self) -> bool {
-        matches!(self, Identifier::Issue(_))
-    }
-
-    fn is_commit(&self) -> bool {
+    /// If the identifier is a commit.
+    pub fn is_commit(&self) -> bool {
         matches!(self, Identifier::Commit(_))
     }
 
-    fn is_other(&self) -> bool {
+    /// If the identifier is another identifier.
+    pub fn is_other(&self) -> bool {
         matches!(self, Identifier::Other(_))
+    }
+
+    pub fn sort(&mut self, order: SortOrder) {
+        match self {
+            Identifier::Number(nums) => {
+                nums.sort_unstable_by(|x, y| order.sort_by(x, y, |xi, yi| xi.cmp(yi)));
+            }
+            Identifier::Commit(commits) => {
+                commits.sort_by(|x, y| order.sort_by(x, y, git::sort_by));
+            }
+            // already sorted: a single, fall-through identifier
+            Identifier::Other(_) => (),
+        }
     }
 }
 
-// sort
-// by the number, otherwise, sort as 0. the numbers
-// should be sorted, and the `max(values) || 0` should
-// be used.
-// TODO(ahuszagh) Nee
+/// A placeholder for an identifier.
+///
+/// The placeholder is the separator.
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Placeholder<'a> {
+    /// An identifier replacement specifier for any kind.
+    /// The placeholder is the separator.
+    Any(Option<char>, &'a str, Option<char>),
+    /// An identifier replacement specifier for a number.
+    /// The placeholder is the separator.
+    Number(Option<char>, &'a str, Option<char>),
+    /// An identifier replacement specifier for a commit.
+    /// The placeholder is the separator.
+    Commit(Option<char>, &'a str, Option<char>),
+    /// A fallthrough identifier replacement specifier.
+    Other,
+}
 
-// TODO(ahuszagh) Should have a validator or parser type
+impl<'a> Placeholder<'a> {
+    /// Parse the placeholder from the format specifier.
+    ///
+    /// The braces signifiers have been previously removed,
+    /// but any separators have not.
+    pub fn parse(s: &'a str, default_sep: &'a str) -> Result<Placeholder<'a>> {
+        let b = s.as_bytes();
+        let (kind, sep) = match extract_unescaped_at_end(b, b'[', b']')? {
+            Some(index) => {
+                let kind = &b[..index];
+                let sep = &b[index + 1..b.len() - 1];
+                (kind.to_utf8()?, Some(sep.to_utf8()?))
+            }
+            None => (b.to_utf8()?, None),
+        };
 
-// TODO(ahuszagh) Restore...
-//impl IdType {
-//    fn numbers(&self) -> &[u64] {
-//        match self {
-//            IdType::PullRequest(v) => v,
-//            IdType::Issue(v) => v,
-//            Id::Other => todo!(),
-//        }
-//    }
-//
-//    fn max_number(&self) -> u64 {
-//        self.numbers().iter().max().map_or_else(|| 0, |v| *v)
-//    }
-//
-//    // TODO(ahuszagh) Probably need a commit-based formatter.
-//
-//    fn parse_stem(file_stem: &str) -> cross::Result<IdType> {
-//        let (is_issue, rest) = match file_stem.strip_prefix("issue") {
-//            Some(n) => (true, n),
-//            None => (false, file_stem),
-//        };
-//        let mut numbers = rest
-//            .split('-')
-//            .map(|x| x.parse::<u64>())
-//            .collect::<Result<Vec<u64>, _>>()?;
-//        numbers.sort_unstable();
-//
-//        Ok(match is_issue {
-//            false => IdType::PullRequest(numbers),
-//            true => IdType::Issue(numbers),
-//        })
-//    }
-//
-//    fn parse_changelog(prs: &str) -> cross::Result<IdType> {
-//        let mut numbers = prs
-//            .split(',')
-//            .map(|x| x.trim().parse::<u64>())
-//            .collect::<Result<Vec<u64>, _>>()?;
-//        numbers.sort_unstable();
-//
-//        Ok(IdType::PullRequest(numbers))
-//    }
-//}
+        match kind {
+            // TODO(ahuszagh) Here...
+            //"id" => into_placeholder!(@sep Any, sep, default_sep),
+            //"number" => into_placeholder!(@sep Number, sep, default_sep),
+            //"commit" => into_placeholder!(@sep Commit, sep, default_sep),
+            //"other" => into_placeholder!(@nosep Other, sep),
+            _ => eyre::bail!("got unsupported placeholder \"{s}\""),
+        }
+    }
+}
 
+impl<'a> fmt::Display for Placeholder<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            _ => todo!(),
+            //Placeholder::Any(sep) => fmt_pattern!(@sep f, "id", sep),
+            //Placeholder::Number(sep) => fmt_pattern!(@sep f, "number", sep),
+            //Placeholder::Commit(sep) => fmt_pattern!(@sep f, "commit", sep),
+            //Placeholder::Other => fmt_pattern!(@nosep f, "other"),
+        }
+    }
+}
+
+//define_pattern!(@sep);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn name() {
-        unimplemented!();
-    }
+    // TODO(ahuszagh) Implement
+
+//    #[test]
+//    fn test_placeholder_parse() -> Result<()> {
+//        let sep = ",";
+//        let parse = |s| Placeholder::parse(s, sep);
+//        assert_eq!(parse("id")?, Placeholder::Any(sep));
+//        assert_eq!(parse("number")?, Placeholder::Number(sep));
+//        assert_eq!(parse("commit")?, Placeholder::Commit(sep));
+//        assert_eq!(parse("other")?, Placeholder::Other);
+//
+//        assert_eq!(parse("id[-]")?, Placeholder::Any("-"));
+//        assert_eq!(parse("number[_]")?, Placeholder::Number("_"));
+//        assert_eq!(parse("commit[/]")?, Placeholder::Commit("/"));
+//
+//        assert!(parse("other[/]").is_err());
+//        assert!(parse("idx").is_err());
+//
+//        Ok(())
+//    }
 }

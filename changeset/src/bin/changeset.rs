@@ -19,11 +19,21 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use clap::Args;
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use eyre::Result;
 
-mod format;
-mod git;
-mod id;
+pub fn main() -> Result<()> {
+    color_eyre::config::HookBuilder::new()
+        .display_env_section(false)
+        .install()?;
+
+    // TODO(ahuszagh) Here...
+
+    Ok(())
+}
+
+// TODO(ahuszagh) Need the channel.
+// TODO(ahuszagh) Need the manifest path
 
 #[derive(Args, Debug)]
 pub struct BuildChangelog {
@@ -42,6 +52,9 @@ pub struct BuildChangelog {
     /// Whether we're doing a dry run or not.
     #[clap(long, env = "DRY_RUN")]
     dry_run: bool,
+    /// The manifest path for the configuration file.
+    #[clap(long)]
+    manifest_path: String,
 }
 
 #[derive(Args, Debug)]
@@ -57,25 +70,41 @@ pub struct ValidateChangelog {
     /// Whether messages should use color output.
     #[clap(long)]
     pub color: Option<String>,
+    /// The manifest path for the configuration file.
+    #[clap(long)]
+    manifest_path: String,
 }
 
-pub fn main() -> eyre::Result<()> {
-    color_eyre::config::HookBuilder::new()
-        .display_env_section(false)
-        .install()?;
-
-    Ok(())
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Build the changelog.
+    BuildChangelog(BuildChangelog),
+    /// Validate changelog entries.
+    ValidateChangelog(ValidateChangelog),
 }
 
+#[derive(Parser, Debug)]
+#[clap(version, about, long_about = None)]
+struct Cli {
+    /// Toolchain name/version to use (such as stable or 1.59.0).
+    #[clap(value_parser = is_toolchain)]
+    toolchain: Option<String>,
+    #[clap(subcommand)]
+    command: Commands,
+}
 
-// TODO(ahuszagh) Need these..
-// TODO(ahuszagh) Need a toml config file.
+// hidden implied parser so we can get matches without recursion.
+#[derive(Parser, Debug)]
+struct CliHidden {
+    #[clap(subcommand)]
+    command: Commands,
+}
 
-//pub fn cargo_metadata(msg_info: &mut MessageInfo) -> cross::Result<cross::CargoMetadata> {
-//    cross::cargo_metadata_with_args(Some(Path::new(env!("CARGO_MANIFEST_DIR"))), None, msg_info)?
-//        .ok_or_else(|| eyre::eyre!("could not find cross workspace"))
-//}
-//
-//pub fn project_dir(msg_info: &mut MessageInfo) -> cross::Result<PathBuf> {
-//    Ok(cargo_metadata(msg_info)?.workspace_root)
-//}
+fn is_toolchain(toolchain: &str) -> Result<String> {
+    if toolchain.starts_with('+') {
+        Ok(toolchain.chars().skip(1).collect())
+    } else {
+        let _ = <CliHidden as CommandFactory>::command().get_matches();
+        unreachable!();
+    }
+}
