@@ -2,7 +2,7 @@
 # shellcheck disable=SC2086,SC1091,SC1090
 
 set -x
-set -euo pipefail
+set -eo pipefail
 
 # NOTE: "${@}" is an unbound variable for bash 3.2, which is the
 # installed version on macOS. likewise, "${var[@]}" is an unbound
@@ -11,7 +11,6 @@ set -euo pipefail
 ci_dir=$(dirname "${BASH_SOURCE[0]}")
 ci_dir=$(realpath "${ci_dir}")
 . "${ci_dir}"/shared.sh
-project_home=$(dirname "${ci_dir}")
 
 workspace_test() {
   "${CROSS[@]}" build --target "${TARGET}" --workspace "$@" ${CROSS_FLAGS}
@@ -32,7 +31,7 @@ main() {
     export QEMU_STRACE=1
 
     # ensure we have the proper toolchain and optional rust flags
-    export CROSS=("${project_home}/target/debug/cross")
+    export CROSS=("${PROJECT_HOME}/target/debug/cross")
     export CROSS_FLAGS="-v"
     if (( ${BUILD_STD:-0} )); then
         # use build-std instead of xargo, due to xargo being
@@ -190,7 +189,7 @@ cross_run() {
         "${CROSS[@]}" run "$@" ${CROSS_FLAGS}
     else
         for runner in ${RUNNERS}; do
-            echo -e "[target.${TARGET}]\nrunner = \"${runner}\"" > Cross.toml
+            echo -e "[target.${TARGET}]\nrunner = \"${runner}\"" > "${CARGO_TMP_DIR}"/Cross.toml
             "${CROSS[@]}" run "$@" ${CROSS_FLAGS}
         done
     fi
@@ -201,7 +200,7 @@ cross_test() {
         "${CROSS[@]}" test "$@" ${CROSS_FLAGS}
     else
         for runner in ${RUNNERS}; do
-            echo -e "[target.${TARGET}]\nrunner = \"${runner}\"" > Cross.toml
+            echo -e "[target.${TARGET}]\nrunner = \"${runner}\"" > "${CARGO_TMP_DIR}"/Cross.toml
             "${CROSS[@]}" test "$@" ${CROSS_FLAGS}
         done
     fi
@@ -212,7 +211,7 @@ cross_bench() {
         "${CROSS[@]}" bench "$@" ${CROSS_FLAGS}
     else
         for runner in ${RUNNERS}; do
-            echo -e "[target.${TARGET}]\nrunner = \"${runner}\"" > Cross.toml
+            echo -e "[target.${TARGET}]\nrunner = \"${runner}\"" > "${CARGO_TMP_DIR}"/Cross.toml
             "${CROSS[@]}" bench "$@" ${CROSS_FLAGS}
         done
     fi

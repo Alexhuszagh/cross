@@ -2,6 +2,19 @@
 
 ci_dir=$(dirname "${BASH_SOURCE[0]}")
 ci_dir=$(realpath "${ci_dir}")
+PROJECT_HOME=$(dirname "${ci_dir}")
+export PROJECT_HOME
+CARGO_TMP_DIR="${PROJECT_HOME}/target/tmp"
+export CARGO_TMP_DIR
+
+if [[ -n "${CROSS_CONTAINER_ENGINE}" ]]; then
+  CROSS_ENGINE="${CROSS_CONTAINER_ENGINE}"
+elif command -v docker >/dev/null 2>&1; then
+  CROSS_ENGINE=docker
+else
+  CROSS_ENGINE=podman
+fi
+export CROSS_ENGINE
 
 function retry {
   local tries="${TRIES-5}"
@@ -27,11 +40,11 @@ function retry {
 
 function mkcargotemp {
   local td=
-  mkdir -p "$ci_dir"/../target/tmp
-  td=$(command mktemp --tmpdir="$ci_dir"/../target/tmp "${@}")
+  td="$CARGO_TMP_DIR"/$(mktemp -u "${@}" | xargs basename)
+  mkdir -p "$td"
   echo '# Cargo.toml
   [workspace]
   members = ["'"$(basename "$td")"'"]
-   ' > "$ci_dir"/../target/tmp/Cargo.toml
+   ' > "$CARGO_TMP_DIR"/Cargo.toml
   echo "$td"
 }

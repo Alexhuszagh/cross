@@ -21,10 +21,9 @@ fi
 ci_dir=$(dirname "${BASH_SOURCE[0]}")
 ci_dir=$(realpath "${ci_dir}")
 . "${ci_dir}"/shared.sh
-project_home=$(dirname "${ci_dir}")
 
 main() {
-    docker run -v "${project_home}":"${project_home}" -w "${project_home}" \
+    docker run -v "${PROJECT_HOME}":"${PROJECT_HOME}" -w "${PROJECT_HOME}" \
         --rm -e TARGET -e RUSTFLAGS -e RUST_TEST_THREADS \
         -e LLVM_PROFILE_FILE -e CARGO_INCREMENTAL \
         -e "CROSS_TARGET_${TARGET_UPPER//-/_}_IMAGE" \
