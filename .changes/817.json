@@ -1,6 +1,7 @@
 [
   {
     "description": "Images can now specify a certain toolchain via `target.{target}.image.toolchain`",
+    "breaking": true,
     "type": "changed"
   },
   {
