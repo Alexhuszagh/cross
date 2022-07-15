@@ -1,3 +1,5 @@
+mod cli;
+mod client;
 pub mod custom;
 mod engine;
 mod local;
