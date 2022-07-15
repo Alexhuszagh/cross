@@ -394,7 +394,7 @@ fn copy_volume_container_rust_base(
     // SAFETY: safe, single-threaded execution.
     let tempdir = unsafe { temp::TempDir::new()? };
     let temppath = tempdir.path();
-    fs::create_dir_all(&temppath.join(&rustlib))?;
+    file::create_dir_all(&temppath.join(&rustlib))?;
     let mut had_symlinks = copy_dir(
         &sysroot.join("lib"),
         &temppath.join("lib"),
@@ -431,7 +431,7 @@ fn copy_volume_container_rust_manifest(
     // SAFETY: safe, single-threaded execution.
     let tempdir = unsafe { temp::TempDir::new()? };
     let temppath = tempdir.path();
-    fs::create_dir_all(&temppath.join(&rustlib))?;
+    file::create_dir_all(&temppath.join(&rustlib))?;
     let had_symlinks = copy_dir(
         &sysroot.join(&rustlib),
         &temppath.join(&rustlib),
@@ -620,7 +620,7 @@ fn copy_volume_file_list(
     for file in files {
         let src_path = src.join(file);
         let dst_path = temppath.join(file);
-        fs::create_dir_all(dst_path.parent().expect("must have parent"))?;
+        file::create_dir_all(dst_path.parent().expect("must have parent"))?;
         fs::copy(&src_path, &dst_path)?;
     }
     copy_volume_files(engine, container, temppath, dst, msg_info)
@@ -687,7 +687,7 @@ fn copy_volume_container_project(
     match volume {
         VolumeId::Keep(_) => {
             let parent = temp::dir()?;
-            fs::create_dir_all(&parent)?;
+            file::create_dir_all(&parent)?;
             let fingerprint = parent.join(container);
             let current = get_project_fingerprint(src, copy_cache)?;
             // need to check if the container path exists, otherwise we might

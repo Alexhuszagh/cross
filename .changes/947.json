@@ -1,0 +1,5 @@
+{
+    "type": "internal",
+    "description": "resolve symlinks for cargo and xargo home",
+    "issues": [373]
+}

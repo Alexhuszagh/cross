@@ -261,9 +261,21 @@ impl Directories {
         // otherwise `docker` will create them but they will be owned by `root`
         // cargo builds all intermediate directories, but fails
         // if it has other issues (such as permission errors).
-        fs::create_dir_all(&cargo)?;
-        fs::create_dir_all(&xargo)?;
+        file::create_dir_all(&cargo)?;
+        file::create_dir_all(&xargo)?;
+        if let Some(ref nix_store) = nix_store {
+            file::create_dir_all(nix_store)?;
+        }
         create_target_dir(target)?;
+
+        // now that we know the paths exist, canonicalize them. this avoids creating
+        // directories after failed canonicalization into a shared directory.
+        let cargo = file::canonicalize(&cargo)?;
+        let xargo = file::canonicalize(&xargo)?;
+        let nix_store = match nix_store {
+            Some(store) => Some(file::canonicalize(&store)?),
+            None => None,
+        };
 
         let cargo = mount_finder.find_mount_path(cargo);
         let xargo = mount_finder.find_mount_path(xargo);
@@ -312,7 +324,7 @@ fn create_target_dir(path: &Path) -> Result<()> {
     // cargo creates all paths to the target directory, and writes
     // a cache dir tag only if the path doesn't previously exist.
     if !path.exists() {
-        fs::create_dir_all(&path)?;
+        file::create_dir_all(&path)?;
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
