@@ -242,24 +242,19 @@ fn copy_volume_files_nocache(
 pub fn copy_volume_container_xargo(
     engine: &Engine,
     container: &str,
-    xargo_dir: &Path,
-    target: &Target,
+    dirs: &Directories,
     mount_prefix: &Path,
     msg_info: &mut MessageInfo,
 ) -> Result<()> {
-    // only need to copy the rustlib files for our current target.
-    let triple = target.triple();
-    let relpath = Path::new("lib").join("rustlib").join(&triple);
-    let src = xargo_dir.join(&relpath);
-    let dst = mount_prefix.join("xargo").join(&relpath);
-    if Path::new(&src).exists() {
+    let dst = mount_prefix.join(Path::new(&dirs.xargo_mount_path_relative()?));
+    if dirs.xargo.exists() {
         create_volume_dir(
             engine,
             container,
             dst.parent().expect("destination should have a parent"),
             msg_info,
         )?;
-        copy_volume_files(engine, container, &src, &dst, msg_info)?;
+        copy_volume_files(engine, container, &dirs.xargo, &dst, msg_info)?;
     }
 
     Ok(())
@@ -268,23 +263,23 @@ pub fn copy_volume_container_xargo(
 pub fn copy_volume_container_cargo(
     engine: &Engine,
     container: &str,
-    cargo_dir: &Path,
+    dirs: &Directories,
     mount_prefix: &Path,
     copy_registry: bool,
     msg_info: &mut MessageInfo,
 ) -> Result<()> {
-    let dst = mount_prefix.join("cargo");
+    let dst = mount_prefix.join(Path::new(&dirs.cargo_mount_path_relative()?));
     let copy_registry = env::var("CROSS_REMOTE_COPY_REGISTRY")
         .map(|s| bool_from_envvar(&s))
         .unwrap_or(copy_registry);
 
     if copy_registry {
-        copy_volume_files(engine, container, cargo_dir, &dst, msg_info)?;
+        copy_volume_files(engine, container, &dirs.cargo, &dst, msg_info)?;
     } else {
         // can copy a limit subset of files: the rest is present.
         create_volume_dir(engine, container, &dst, msg_info)?;
-        for entry in fs::read_dir(cargo_dir)
-            .wrap_err_with(|| format!("when reading directory {cargo_dir:?}"))?
+        for entry in fs::read_dir(&dirs.cargo)
+            .wrap_err_with(|| format!("when reading directory {:?}", dirs.cargo))?
         {
             let file = entry?;
             let basename = file
@@ -372,17 +367,17 @@ fn warn_symlinks(had_symlinks: bool, msg_info: &mut MessageInfo) -> Result<()> {
 fn copy_volume_container_rust_base(
     engine: &Engine,
     container: &str,
-    sysroot: &Path,
+    dirs: &Directories,
     mount_prefix: &Path,
     msg_info: &mut MessageInfo,
 ) -> Result<()> {
     // the rust toolchain is quite large, but most of it isn't needed
     // we need the bin, libexec, and etc directories, and part of the lib directory.
-    let dst = mount_prefix.join("rust");
+    let dst = mount_prefix.join(Path::new(&dirs.sysroot_mount_path_relative()?));
     let rustlib = Path::new("lib").join("rustlib");
     create_volume_dir(engine, container, &dst.join(&rustlib), msg_info)?;
     for basename in ["bin", "libexec", "etc"] {
-        let file = sysroot.join(basename);
+        let file = dirs.sysroot.join(basename);
         copy_volume_files(engine, container, &file, &dst, msg_info)?;
     }
 
@@ -396,7 +391,7 @@ fn copy_volume_container_rust_base(
     let temppath = tempdir.path();
     file::create_dir_all(&temppath.join(&rustlib))?;
     let mut had_symlinks = copy_dir(
-        &sysroot.join("lib"),
+        &dirs.sysroot.join("lib"),
         &temppath.join("lib"),
         true,
         0,
@@ -405,7 +400,7 @@ fn copy_volume_container_rust_base(
 
     // next, copy the src/etc directories inside rustlib
     had_symlinks |= copy_dir(
-        &sysroot.join(&rustlib),
+        &dirs.sysroot.join(&rustlib),
         &temppath.join(&rustlib),
         true,
         0,
@@ -419,13 +414,13 @@ fn copy_volume_container_rust_base(
 fn copy_volume_container_rust_manifest(
     engine: &Engine,
     container: &str,
-    sysroot: &Path,
+    dirs: &Directories,
     mount_prefix: &Path,
     msg_info: &mut MessageInfo,
 ) -> Result<()> {
     // copy over all the manifest files in rustlib
     // these are small text files containing names/paths to toolchains
-    let dst = mount_prefix.join("rust");
+    let dst = mount_prefix.join(Path::new(&dirs.sysroot_mount_path_relative()?));
     let rustlib = Path::new("lib").join("rustlib");
 
     // SAFETY: safe, single-threaded execution.
@@ -433,7 +428,7 @@ fn copy_volume_container_rust_manifest(
     let temppath = tempdir.path();
     file::create_dir_all(&temppath.join(&rustlib))?;
     let had_symlinks = copy_dir(
-        &sysroot.join(&rustlib),
+        &dirs.sysroot.join(&rustlib),
         &temppath.join(&rustlib),
         true,
         0,
@@ -448,17 +443,17 @@ fn copy_volume_container_rust_manifest(
 pub fn copy_volume_container_rust_triple(
     engine: &Engine,
     container: &str,
-    sysroot: &Path,
+    dirs: &Directories,
     triple: &str,
     mount_prefix: &Path,
     skip_exists: bool,
     msg_info: &mut MessageInfo,
 ) -> Result<()> {
     // copy over the files for a specific triple
-    let dst = mount_prefix.join("rust");
+    let dst = mount_prefix.join(Path::new(&dirs.sysroot_mount_path_relative()?));
     let rustlib = Path::new("lib").join("rustlib");
     let dst_rustlib = dst.join(&rustlib);
-    let src_toolchain = sysroot.join(&rustlib).join(triple);
+    let src_toolchain = dirs.sysroot.join(&rustlib).join(triple);
     let dst_toolchain = dst_rustlib.join(triple);
 
     // skip if the toolchain already exists. for the host toolchain
@@ -473,7 +468,7 @@ pub fn copy_volume_container_rust_triple(
     if !skip && skip_exists {
         // this means we have a persistent data volume and we have a
         // new target, meaning we might have new manifests as well.
-        copy_volume_container_rust_manifest(engine, container, sysroot, mount_prefix, msg_info)?;
+        copy_volume_container_rust_manifest(engine, container, dirs, mount_prefix, msg_info)?;
     }
 
     Ok(())
@@ -482,7 +477,7 @@ pub fn copy_volume_container_rust_triple(
 pub fn copy_volume_container_rust(
     engine: &Engine,
     container: &str,
-    sysroot: &Path,
+    dirs: &Directories,
     target: &Target,
     mount_prefix: &Path,
     skip_target: bool,
@@ -491,12 +486,12 @@ pub fn copy_volume_container_rust(
     let target_triple = target.triple();
     let image_triple = Host::X86_64UnknownLinuxGnu.triple();
 
-    copy_volume_container_rust_base(engine, container, sysroot, mount_prefix, msg_info)?;
-    copy_volume_container_rust_manifest(engine, container, sysroot, mount_prefix, msg_info)?;
+    copy_volume_container_rust_base(engine, container, dirs, mount_prefix, msg_info)?;
+    copy_volume_container_rust_manifest(engine, container, dirs, mount_prefix, msg_info)?;
     copy_volume_container_rust_triple(
         engine,
         container,
-        sysroot,
+        dirs,
         image_triple,
         mount_prefix,
         false,
@@ -506,7 +501,7 @@ pub fn copy_volume_container_rust(
         copy_volume_container_rust_triple(
             engine,
             container,
-            sysroot,
+            dirs,
             target_triple,
             mount_prefix,
             false,
@@ -980,8 +975,7 @@ pub(crate) fn run(
         copy_volume_container_xargo(
             engine,
             &container,
-            &dirs.xargo,
-            target,
+            dirs,
             mount_prefix_path,
             msg_info,
         )
@@ -989,7 +983,7 @@ pub(crate) fn run(
         copy_volume_container_cargo(
             engine,
             &container,
-            &dirs.cargo,
+            dirs,
             mount_prefix_path,
             false,
             msg_info,
@@ -998,7 +992,7 @@ pub(crate) fn run(
         copy_volume_container_rust(
             engine,
             &container,
-            &dirs.sysroot,
+            dirs,
             target,
             mount_prefix_path,
             false,
@@ -1010,7 +1004,7 @@ pub(crate) fn run(
         copy_volume_container_rust_triple(
             engine,
             &container,
-            &dirs.sysroot,
+            dirs,
             target.triple(),
             mount_prefix_path,
             true,
@@ -1047,9 +1041,9 @@ pub(crate) fn run(
     .wrap_err("when copying project")?;
 
     let mut copied = vec![
-        (&dirs.xargo, mount_prefix_path.join("xargo")),
-        (&dirs.cargo, mount_prefix_path.join("cargo")),
-        (&dirs.sysroot, mount_prefix_path.join("rust")),
+        (&dirs.xargo, mount_prefix_path.join(Path::new(&dirs.xargo_mount_path_relative()?))),
+        (&dirs.cargo, mount_prefix_path.join(Path::new(&dirs.cargo_mount_path_relative()?))),
+        (&dirs.sysroot, mount_prefix_path.join(Path::new(&dirs.sysroot_mount_path_relative()?))),
         (&dirs.host_root, mount_root.clone()),
     ];
     let mut to_symlink = vec![];
@@ -1169,10 +1163,10 @@ symlink_recurse \"${{prefix}}\"
     // 6. execute our cargo command inside the container
     let mut docker = subcommand(engine, "exec");
     docker_user_id(&mut docker, engine.kind);
-    docker_envvars(&mut docker, &options.config, target, msg_info)?;
+    docker_envvars(&mut docker, &options.config, dirs, target, msg_info)?;
     docker_cwd(&mut docker, &paths)?;
     docker.arg(&container);
-    docker.args(&["sh", "-c", &format!("PATH=$PATH:/rust/bin {:?}", cmd)]);
+    docker.args(&["sh", "-c", &build_command(dirs, &cmd)?]);
     bail_container_exited!();
     let status = docker
         .run_and_get_status(msg_info, false)

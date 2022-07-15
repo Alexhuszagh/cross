@@ -22,7 +22,7 @@ pub(crate) fn run(
 
     let mut docker = subcommand(engine, "run");
     docker_userns(&mut docker);
-    docker_envvars(&mut docker, &options.config, &options.target, msg_info)?;
+    docker_envvars(&mut docker, &options.config, dirs, &options.target, msg_info)?;
 
     docker_mount(
         &mut docker,
@@ -38,17 +38,18 @@ pub(crate) fn run(
         .wrap_err("when copying seccomp profile")?;
     docker_user_id(&mut docker, engine.kind);
 
+    let cargo_mount_path = dirs.cargo_mount_path()?;
     docker
-        .args(&["-v", &format!("{}:/xargo:Z", dirs.xargo.to_utf8()?)])
-        .args(&["-v", &format!("{}:/cargo:Z", dirs.cargo.to_utf8()?)])
+        .args(&["-v", &format!("{}:{}:Z", dirs.xargo.to_utf8()?, dirs.xargo_mount_path()?)])
+        .args(&["-v", &format!("{}:{cargo_mount_path}:Z", dirs.cargo.to_utf8()?)])
         // Prevent `bin` from being mounted inside the Docker container.
-        .args(&["-v", "/cargo/bin"]);
+        .args(&["-v", &format!("{cargo_mount_path}/bin")]);
     docker.args(&[
         "-v",
         &format!("{}:{}:Z", dirs.host_root.to_utf8()?, dirs.mount_root),
     ]);
     docker
-        .args(&["-v", &format!("{}:/rust:Z,ro", dirs.sysroot.to_utf8()?)])
+        .args(&["-v", &format!("{}:{}:Z,ro", dirs.sysroot.to_utf8()?, dirs.sysroot_mount_path()?)])
         .args(&["-v", &format!("{}:/target:Z", dirs.target.to_utf8()?)]);
     docker_cwd(&mut docker, &paths)?;
 
@@ -76,7 +77,7 @@ pub(crate) fn run(
 
     docker
         .arg(&image)
-        .args(&["sh", "-c", &format!("PATH=$PATH:/rust/bin {:?}", cmd)])
+        .args(&["sh", "-c", &build_command(dirs, &cmd)?])
         .run_and_get_status(msg_info, false)
         .map_err(Into::into)
 }

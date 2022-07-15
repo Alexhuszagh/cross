@@ -430,15 +430,14 @@ pub fn create_persistent_volume(
     docker::remote::copy_volume_container_xargo(
         engine,
         &container,
-        &dirs.xargo,
-        &target,
+        &dirs,
         mount_prefix.as_ref(),
         msg_info,
     )?;
     docker::remote::copy_volume_container_cargo(
         engine,
         &container,
-        &dirs.cargo,
+        &dirs,
         mount_prefix.as_ref(),
         copy_registry,
         msg_info,
@@ -446,7 +445,7 @@ pub fn create_persistent_volume(
     docker::remote::copy_volume_container_rust(
         engine,
         &container,
-        &dirs.sysroot,
+        &dirs,
         &target,
         mount_prefix.as_ref(),
         true,

@@ -289,17 +289,8 @@ impl Directories {
         });
 
         // root is either workspace_root, or, if we're outside the workspace root, the current directory
-        let mount_root: String;
-        #[cfg(target_os = "windows")]
-        {
-            // On Windows, we can not mount the directory name directly. Instead, we use wslpath to convert the path to a linux compatible path.
-            mount_root = host_root.as_wslpath()?;
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            // NOTE: host root has already found the mount path
-            mount_root = host_root.to_utf8()?.to_owned();
-        }
+        // NOTE: host root has already found the mount path
+        let mount_root = canonicalize_mount_path(&host_root)?;
         let mount_cwd = mount_finder.find_path(cwd, false)?;
         let sysroot = mount_finder.find_mount_path(sysroot);
 
@@ -313,6 +304,39 @@ impl Directories {
             mount_cwd,
             sysroot,
         })
+    }
+
+    pub fn cargo_mount_path(&self) -> Result<String> {
+        canonicalize_mount_path(&self.cargo)
+    }
+
+    pub fn xargo_mount_path(&self) -> Result<String> {
+        canonicalize_mount_path(&self.xargo)
+    }
+
+    pub fn sysroot_mount_path(&self) -> Result<String> {
+        canonicalize_mount_path(&self.sysroot)
+    }
+
+    pub fn cargo_mount_path_relative(&self) -> Result<String> {
+        self.cargo_mount_path()?
+            .strip_prefix('/')
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| eyre::eyre!("cargo directory must be relative to root"))
+    }
+
+    pub fn xargo_mount_path_relative(&self) -> Result<String> {
+        self.xargo_mount_path()?
+            .strip_prefix('/')
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| eyre::eyre!("xargo directory must be relative to root"))
+    }
+
+    pub fn sysroot_mount_path_relative(&self) -> Result<String> {
+        self.sysroot_mount_path()?
+            .strip_prefix('/')
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| eyre::eyre!("sysroot directory must be relative to root"))
     }
 }
 
@@ -465,6 +489,7 @@ pub(crate) fn mount(docker: &mut Command, host_path: &Path, prefix: &str) -> Res
 pub(crate) fn docker_envvars(
     docker: &mut Command,
     config: &Config,
+    dirs: &Directories,
     target: &Target,
     msg_info: &mut MessageInfo,
 ) -> Result<()> {
@@ -480,8 +505,8 @@ pub(crate) fn docker_envvars(
     let cross_runner = format!("CROSS_RUNNER={}", runner.unwrap_or_default());
     docker
         .args(&["-e", "PKG_CONFIG_ALLOW_CROSS=1"])
-        .args(&["-e", "XARGO_HOME=/xargo"])
-        .args(&["-e", "CARGO_HOME=/cargo"])
+        .args(&["-e", &format!("XARGO_HOME={}", dirs.xargo_mount_path()?)])
+        .args(&["-e", &format!("CARGO_HOME={}", dirs.cargo_mount_path()?)])
         .args(&["-e", "CARGO_TARGET_DIR=/target"])
         .args(&["-e", &cross_runner]);
     add_cargo_configuration_envvars(docker);
@@ -509,6 +534,10 @@ pub(crate) fn docker_envvars(
     };
 
     Ok(())
+}
+
+pub(crate) fn build_command(dirs: &Directories, cmd: &SafeCommand) -> Result<String> {
+    Ok(format!("PATH=\"$PATH\":\"{}/bin\" {:?}", dirs.sysroot_mount_path()?, cmd))
 }
 
 pub(crate) fn docker_cwd(docker: &mut Command, paths: &DockerPaths) -> Result<()> {
