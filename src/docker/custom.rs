@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use crate::docker::{DockerOptions, DockerPaths};
+use crate::docker::{DockerOptions, DockerPaths, EngineType};
 use crate::shell::MessageInfo;
 use crate::{docker, CargoMetadata, TargetTriple};
 use crate::{errors::*, file, CommandExt, ToUtf8};
@@ -147,7 +147,7 @@ impl<'a> Dockerfile<'a> {
         let has_output = options.config.build_opts().map_or(false, |opts| {
             opts.contains("--load") || opts.contains("--output")
         });
-        if !has_output {
+        if options.engine.kind == EngineType::Docker && !has_output {
             docker_build.args(&["--output", "type=docker"]);
         };
 
