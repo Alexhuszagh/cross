@@ -187,16 +187,13 @@ impl OutputExt for std::process::Output {
 }
 
 pub struct SafeCommand {
-    program: String,
     args: Vec<String>,
 }
 
 impl SafeCommand {
-    pub fn new<S: ToString>(program: S) -> Self {
-        let program = program.to_string();
+    pub fn new(args: &[String]) -> Self {
         SafeCommand {
-            program,
-            args: Vec::new(),
+            args: args.to_vec(),
         }
     }
 
@@ -222,8 +219,8 @@ impl SafeCommand {
 
 impl fmt::Debug for SafeCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&shell_escape::escape(Cow::from(&self.program)))?;
-        for arg in &self.args {
+        f.write_str(&shell_escape::escape(Cow::from(&self.args[0])))?;
+        for arg in &self.args[1..] {
             f.write_str(" ")?;
             f.write_str(&shell_escape::escape(Cow::from(arg)))?;
         }
@@ -233,8 +230,8 @@ impl fmt::Debug for SafeCommand {
 
 impl From<SafeCommand> for Command {
     fn from(s: SafeCommand) -> Self {
-        let mut cmd = Command::new(&s.program);
-        cmd.args(&s.args);
+        let mut cmd = Command::new(&s.args[0]);
+        cmd.args(&s.args[1..]);
         cmd
     }
 }

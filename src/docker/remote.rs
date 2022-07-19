@@ -1152,8 +1152,9 @@ pub(crate) fn run(
         final_args.push("--target-dir".to_owned());
         final_args.push(target_dir_string);
     }
-    let mut cmd = cargo_safe_command(options.cargo_variant);
-    cmd.args(final_args);
+    let cmd = cargo_safe_command(&final_args);
+
+    // TODO(ahuszagh) Remote will have to copy it in...
 
     // 5. create symlinks for copied data
     let mut symlink = vec!["set -e pipefail".to_owned()];
@@ -1200,6 +1201,8 @@ symlink_recurse \"${{prefix}}\"
         .wrap_err("when creating symlinks to provide consistent host/mount paths")?;
 
     // 6. execute our cargo command inside the container
+    let path = format!("\"{}/bin\"", dirs.sysroot_mount_path());
+    // TODO(ahuszagh) Going to need to mount this
     let mut docker = subcommand(engine, "exec");
     docker_user_id(&mut docker, engine.kind);
     docker_envvars(
@@ -1212,7 +1215,7 @@ symlink_recurse \"${{prefix}}\"
     )?;
     docker_cwd(&mut docker, &paths, options.cargo_config_behavior)?;
     docker.arg(&container);
-    docker.args(&["sh", "-c", &build_command(dirs, &cmd)]);
+    docker.args(&["sh", "-c", &build_command(&path, &cmd)]);
     bail_container_exited!();
     let status = docker
         .run_and_get_status(msg_info, false)

@@ -29,8 +29,7 @@ pub(crate) fn run(
     let engine = &options.engine;
     let dirs = &paths.directories;
 
-    let mut cmd = cargo_safe_command(options.cargo_variant);
-    cmd.args(args);
+    let cmd = cargo_safe_command(args);
 
     let mut docker = subcommand(engine, "run");
     docker_userns(&mut docker);
@@ -102,6 +101,15 @@ pub(crate) fn run(
         ]);
     }
 
+    // need to mount the subcommand directory and ensure it's on the path
+    let mut path = format!("\"{}/bin\"", dirs.sysroot_mount_path());
+    if options.custom_subcommand {
+        let host = subcommand_directory(&dirs.toolchain, &options.target)?;
+        let mount = host.as_posix_absolute()?;
+        docker.args(&["-v", &format!("{}:{}:Z,ro", host.to_utf8()?, mount)]);
+        path = format!("{path}:\"{mount}\"");
+    }
+
     // If we're using all config settings, we need to mount all `.cargo` dirs.
     // We've already mounted the CWD, so start at the parents.
     let mut host_cwd = paths.cwd.parent();
@@ -140,7 +148,7 @@ pub(crate) fn run(
 
     docker
         .arg(&image_name)
-        .args(&["sh", "-c", &build_command(dirs, &cmd)])
+        .args(&["sh", "-c", &build_command(&path, &cmd)])
         .run_and_get_status(msg_info, false)
         .map_err(Into::into)
 }

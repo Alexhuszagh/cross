@@ -1,18 +1,27 @@
-use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 use crate::cli::Args;
+use crate::docker::{self, Image};
 use crate::errors::*;
 use crate::extensions::CommandExt;
+use crate::file;
 use crate::shell::{self, MessageInfo};
+use crate::Target;
+use once_cell::sync::OnceCell;
+use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+type SubcommandSet = BTreeSet<String>;
+type SubcommandMap = BTreeMap<String, SubcommandSet>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
     Build,
     Check,
     Doc,
-    Other,
     Run,
     Rustc,
     Test,
@@ -21,31 +30,130 @@ pub enum Subcommand {
     Metadata,
     List,
     Clean,
+    // both are custom subcommands, however, `Other` is not a
+    // registered or known custom subcommand, while `Custom` is.
+    Other(String),
+    Custom(String),
 }
 
 impl Subcommand {
     #[must_use]
-    pub fn needs_docker(self, is_remote: bool) -> bool {
+    pub fn needs_docker(&self, is_remote: bool) -> bool {
         match self {
-            Subcommand::Other | Subcommand::List => false,
+            Subcommand::Other(_) | Subcommand::List => false,
             Subcommand::Clean if !is_remote => false,
             _ => true,
         }
     }
 
     #[must_use]
-    pub fn needs_host(self, is_remote: bool) -> bool {
-        self == Subcommand::Clean && is_remote
+    pub fn needs_host(&self, is_remote: bool) -> bool {
+        matches!(self, Subcommand::Clean) && is_remote
     }
 
     #[must_use]
-    pub fn needs_interpreter(self) -> bool {
+    pub fn needs_interpreter(&self) -> bool {
         matches!(self, Subcommand::Run | Subcommand::Test | Subcommand::Bench)
     }
 
     #[must_use]
-    pub fn needs_target_in_command(self) -> bool {
+    pub fn needs_target_in_command(&self) -> bool {
         !matches!(self, Subcommand::Metadata)
+    }
+
+    pub fn known() -> &'static SubcommandSet {
+        static INSTANCE: OnceCell<SubcommandSet> = OnceCell::new();
+        INSTANCE.get_or_init(|| {
+            [
+                "asm",
+                "audit",
+                "binutils",
+                "deb",
+                "deny",
+                "deps",
+                "emit",
+                "expand",
+                "generate",
+                "hack",
+                "llvm-cov",
+                "outdated",
+                "release",
+                "tarpaulin",
+                "tree",
+                "udeps",
+                "when",
+            ]
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect()
+        })
+    }
+
+    fn installed_cell() -> &'static mut OnceCell<SubcommandMap> {
+        static mut INSTANCE: OnceCell<SubcommandMap> = OnceCell::new();
+        // SAFETY: safe since OnceCell is thread-safe.
+        unsafe { &mut INSTANCE }
+    }
+
+    fn json_path() -> Result<PathBuf> {
+        Ok(file::cargo_dir()?.join("subcommands.json"))
+    }
+
+    // parse the installed subcommands, if present
+    pub fn installed() -> Result<&'static SubcommandMap> {
+        Self::installed_cell().get_or_try_init(|| {
+            let path = Self::json_path()?;
+            if path.exists() {
+                let contents = fs::read_to_string(&path)
+                    .wrap_err_with(|| eyre::eyre!("cannot find file {path:?}"))?;
+                serde_json::from_str(&contents).map_err(Into::into)
+            } else {
+                Ok(BTreeMap::new())
+            }
+        })
+    }
+
+    // install a subcommand and register the subcommand
+    pub fn install(
+        engine: &docker::Engine,
+        subcommand: &str,
+        dirs: &docker::Directories,
+        target: &Target,
+        image: &Image,
+        msg_info: &mut MessageInfo,
+    ) -> Result<()> {
+        if Self::is_installed(target, subcommand)? {
+            return Ok(());
+        }
+        let map = Self::installed_cell()
+            .get_mut()
+            .ok_or_else(|| eyre::eyre!("installed subcommands not previously initialized."))?;
+        docker::install_subcommand(engine, subcommand, dirs, target, image, msg_info)?;
+        if !map.contains_key(&*target.triple()) {
+            map.insert(target.triple().to_owned(), SubcommandSet::new());
+        }
+        let set = map
+            .get_mut(&*target.triple())
+            .ok_or_else(|| eyre::eyre!("subcommand map must contain target triple."))?;
+        // TODO(ahuszagh) This needs to be specific for the toolchain. Fuck.
+        set.insert(target.triple().to_owned());
+
+        let json = serde_json::to_string(&map)?;
+        let mut file = file::write_file(&Self::json_path()?, true)?;
+        file.write_all(json.as_bytes())?;
+
+        Ok(())
+    }
+
+    pub fn is_known(subcommand: &str) -> bool {
+        Self::known().contains(subcommand)
+    }
+
+    pub fn is_installed(target: &Target, subcommand: &str) -> Result<bool> {
+        Ok(Self::installed()?
+            .get(target.triple())
+            .and_then(|s| s.get(subcommand))
+            .is_some())
     }
 }
 
@@ -63,7 +171,7 @@ impl<'a> From<&'a str> for Subcommand {
             "clippy" => Subcommand::Clippy,
             "metadata" => Subcommand::Metadata,
             "--list" => Subcommand::List,
-            _ => Subcommand::Other,
+            _ => Subcommand::Other(s.to_owned()),
         }
     }
 }

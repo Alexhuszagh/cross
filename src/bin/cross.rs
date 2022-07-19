@@ -19,7 +19,7 @@ pub fn main() -> cross::Result<()> {
     let cargo_toml = CargoToml::read()?;
     let cargo_config = CargoConfig::new(cargo_toml);
     let args = cli::parse(&target_list, &cargo_config)?;
-    let subcommand = args.subcommand;
+    let subcommand = args.subcommand.clone();
     let mut msg_info = shell::MessageInfo::create(args.verbose, args.quiet, args.color.as_deref())?;
     let status = match cross::run(args, target_list, cargo_config, &mut msg_info)? {
         Some(status) => status,

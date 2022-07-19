@@ -501,7 +501,7 @@ fn add_libc_version(triple: &str, zig_version: Option<&str>) -> String {
 }
 
 pub fn run(
-    args: Args,
+    mut args: Args,
     target_list: TargetList,
     cargo_config: CargoConfig,
     msg_info: &mut MessageInfo,
@@ -523,7 +523,8 @@ pub fn run(
         let cross_config = CrossConfig::new(cross_toml);
         let config = Config::new(cargo_config, cross_config);
         let target = args
-            .target
+            .target()
+            .cloned()
             .or_else(|| config.cross.target(&target_list))
             .unwrap_or_else(|| Target::from(host.triple(), &target_list));
         config.cross.confusable_target(&target, msg_info)?;
@@ -545,7 +546,7 @@ pub fn run(
         let default_toolchain = QualifiedToolchain::default(&config.cross, msg_info)?;
 
         // `cross +channel`, where channel can be `+channel[-YYYY-MM-DD]`
-        let mut toolchain = if let Some(channel) = args.channel {
+        let mut toolchain = if let Some(channel) = args.channel() {
             let picked_toolchain: Toolchain = channel.parse()?;
 
             if let Some(picked_host) = &picked_toolchain.host {
@@ -638,18 +639,20 @@ To override the toolchain mounted in the image, set `target.{}.image.toolchain =
                 } else if !rustup::component_is_installed("rust-src", &toolchain, msg_info)? {
                     rustup::install_component("rust-src", &toolchain, msg_info)?;
                 }
-                if args.subcommand.map_or(false, |sc| sc == Subcommand::Clippy)
+                if args
+                    .subcommand()
+                    .map_or(false, |sc| matches!(sc, Subcommand::Clippy))
                     && !rustup::component_is_installed("clippy", &toolchain, msg_info)?
                 {
                     rustup::install_component("clippy", &toolchain, msg_info)?;
                 }
             }
 
-            let needs_interpreter = args.subcommand.map_or(false, |sc| sc.needs_interpreter());
+            let needs_interpreter = args.subcommand().map_or(false, |sc| sc.needs_interpreter());
 
             let add_libc = |triple: &str| add_libc_version(triple, zig_version.as_deref());
             let mut filtered_args = if args
-                .subcommand
+                .subcommand()
                 .map_or(false, |s| !s.needs_target_in_command())
             {
                 let mut filtered_args = Vec::new();
@@ -690,7 +693,9 @@ To override the toolchain mounted in the image, set `target.{}.image.toolchain =
                 args.all.clone()
             };
 
-            let is_test = args.subcommand.map_or(false, |sc| sc == Subcommand::Test);
+            let is_test = args
+                .subcommand()
+                .map_or(false, |sc| matches!(sc, Subcommand::Test));
             if is_test && config.cross.doctests().unwrap_or_default() && is_nightly {
                 filtered_args.push("-Zdoctest-xcompile".to_owned());
             }
@@ -698,8 +703,53 @@ To override the toolchain mounted in the image, set `target.{}.image.toolchain =
                 filtered_args.push("-Zbuild-std".to_owned());
             }
 
+            // check for a custom subcommand
+            // need to register before `needs_docker`
+            let paths = docker::DockerPaths::create(&engine, metadata, cwd, toolchain.clone())?;
+            if let Some(Subcommand::Other(sc)) = args.subcommand() {
+                // TODO(ahuszagh): this isn't working, always returning true
+                let is_installed = Subcommand::is_installed(&target, sc)?;
+                let is_known = Subcommand::is_known(sc);
+                if !is_installed && is_known {
+                    // TODO(ahuszagh) Restore this, shouldn't install by default.
+                    Subcommand::install(&engine, sc, &paths.directories, &target, &image, msg_info)?;
+                    //msg_info.warn(format_args!("subcommand cargo-{sc} is not installed. you may need to install it via `cross-util`"))?;
+                }
+                // TODO(ahuszagh) Should only be if is_installed.
+                if is_installed || is_known {
+                    args.subcommand = Some(Subcommand::Custom(sc.clone()));
+                }
+            }
+
+            // can't use a custom subcommand with zig or xargo
+            let is_custom = matches!(args.subcommand(), Some(Subcommand::Custom(_)));
+            match (cargo_variant, args.subcommand()) {
+                (CargoVariant::Cargo, Some(Subcommand::Custom(sc))) => {
+                    filtered_args.remove(args.subcommand_index.ok_or_else(|| {
+                        eyre::eyre!("must have subcommand index with subcommand")
+                    })?);
+                    // our target may not run natively
+                    // TODO(ahuszagh) It's currently escaping our runner
+                    // Which, you know, is an issue.
+//                    let runner = format!(
+//                        "$CARGO_TARGET_{}_RUNNER",
+//                        target.triple().to_ascii_uppercase().replace('-', "_")
+//                    );
+                    filtered_args.insert(0, format!("cargo-{sc}"));
+//                    filtered_args.insert(0, runner);
+                }
+                (_, Some(Subcommand::Custom(_))) => {
+                    msg_info.error(format_args!(
+                        "cannot use custom subcommands with xargo or zig."
+                    ))?;
+                    eyre::bail!("invalid configuration settings");
+                }
+                (variant, _) => filtered_args.insert(0, variant.to_str().to_owned()),
+            }
+            println!("filtered_args={filtered_args:?}", );
+
             let needs_docker = args
-                .subcommand
+                .subcommand()
                 .map_or(false, |sc| sc.needs_docker(is_remote));
             if target.needs_docker() && needs_docker {
                 if host_version_meta.needs_interpreter()
@@ -710,7 +760,6 @@ To override the toolchain mounted in the image, set `target.{}.image.toolchain =
                     docker::register(&engine, &target, msg_info)?;
                 }
 
-                let paths = docker::DockerPaths::create(&engine, metadata, cwd, toolchain.clone())?;
                 let cargo_config_behavior =
                     config.cross.env_cargo_config(&target)?.unwrap_or_default();
                 let options = docker::DockerOptions::new(
@@ -720,10 +769,14 @@ To override the toolchain mounted in the image, set `target.{}.image.toolchain =
                     image,
                     cargo_variant,
                     cargo_config_behavior,
+                    is_custom,
                 );
+
                 let status = docker::run(options, paths, &filtered_args, msg_info)
                     .wrap_err("could not run container")?;
-                let needs_host = args.subcommand.map_or(false, |sc| sc.needs_host(is_remote));
+                let needs_host = args
+                    .subcommand()
+                    .map_or(false, |sc| sc.needs_host(is_remote));
                 if !status.success() {
                     warn_on_failure(&target, &toolchain, msg_info)?;
                 }

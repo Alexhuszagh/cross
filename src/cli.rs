@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cargo::Subcommand;
 use crate::cargo_config::CargoConfig;
-use crate::errors::Result;
+use crate::errors::*;
 use crate::file::{absolute_path, PathExt};
 use crate::rustc::TargetList;
 use crate::shell::{self, MessageInfo};
@@ -22,6 +22,21 @@ pub struct Args {
     pub verbose: bool,
     pub quiet: bool,
     pub color: Option<String>,
+    pub subcommand_index: Option<usize>,
+}
+
+impl Args {
+    pub fn subcommand(&self) -> Option<&Subcommand> {
+        self.subcommand.as_ref()
+    }
+
+    pub fn target(&self) -> Option<&Target> {
+        self.target.as_ref()
+    }
+
+    pub fn channel(&self) -> Option<&String> {
+        self.channel.as_ref()
+    }
 }
 
 pub fn is_subcommand_list(stdout: &str) -> bool {
@@ -36,7 +51,7 @@ pub fn group_subcommands(stdout: &str) -> (Vec<&str>, Vec<&str>) {
         let first = line.split_whitespace().next();
         if let Some(command) = first {
             match Subcommand::from(command) {
-                Subcommand::Other => host.push(line),
+                Subcommand::Other(_) => host.push(line),
                 _ => cross.push(line),
             }
         }
@@ -167,7 +182,7 @@ fn parse_subcommand(
         );
     }
     let subcommand = Subcommand::from(arg.as_ref());
-    if subcommand == Subcommand::Other {
+    if let Subcommand::Other(_) = &subcommand {
         if let Some(alias) = config.alias(&arg)? {
             seen.push(arg);
             let mut iter = alias.iter().cloned();
@@ -176,10 +191,10 @@ fn parse_subcommand(
             }
             return Ok(());
         }
-        return Ok(());
     }
 
     // fallthrough
+    result.subcommand_index = Some(result.all.len());
     result.all.push(arg);
     result.subcommand = Some(subcommand);
 

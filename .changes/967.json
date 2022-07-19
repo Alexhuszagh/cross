@@ -1,0 +1,5 @@
+{
+    "description": "add support for custom cargo subcommands.",
+    "type": "added",
+    "issues": [704, 716]
+}

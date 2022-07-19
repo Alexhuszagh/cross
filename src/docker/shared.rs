@@ -41,6 +41,7 @@ pub struct DockerOptions {
     pub image: Image,
     pub cargo_variant: CargoVariant,
     pub cargo_config_behavior: CargoConfigBehavior,
+    pub custom_subcommand: bool,
 }
 
 impl DockerOptions {
@@ -51,6 +52,7 @@ impl DockerOptions {
         image: Image,
         cargo_variant: CargoVariant,
         cargo_config_behavior: CargoConfigBehavior,
+        custom_subcommand: bool,
     ) -> DockerOptions {
         DockerOptions {
             engine,
@@ -59,6 +61,7 @@ impl DockerOptions {
             image,
             cargo_variant,
             cargo_config_behavior,
+            custom_subcommand,
         }
     }
 
@@ -436,7 +439,7 @@ pub fn get_package_info(
 }
 
 /// Register binfmt interpreters
-pub(crate) fn register(engine: &Engine, target: &Target, msg_info: &mut MessageInfo) -> Result<()> {
+pub fn register(engine: &Engine, target: &Target, msg_info: &mut MessageInfo) -> Result<()> {
     let cmd = if target.is_windows() {
         // https://www.kernel.org/doc/html/latest/admin-guide/binfmt-misc.html
         "mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc && \
@@ -453,6 +456,61 @@ pub(crate) fn register(engine: &Engine, target: &Target, msg_info: &mut MessageI
     docker.arg(UBUNTU_BASE);
     docker.args(&["sh", "-c", cmd]);
 
+    docker.run(msg_info, false).map_err(Into::into)
+}
+
+/// install custom subcommands
+pub fn install_subcommand(
+    engine: &Engine,
+    command: &str,
+    dirs: &Directories,
+    target: &Target,
+    image: &Image,
+    msg_info: &mut MessageInfo,
+) -> Result<()> {
+    let mut docker = subcommand(engine, "run");
+    docker_userns(&mut docker);
+    docker.arg("--rm");
+    docker
+        .args(&[
+            "-v",
+            &format!("{}:{}:Z", dirs.xargo.to_utf8()?, dirs.xargo_mount_path()),
+        ])
+        .args(&[
+            "-v",
+            &format!("{}:{}:Z", dirs.cargo.to_utf8()?, dirs.cargo_mount_path()),
+        ])
+        // Prevent `bin` from being mounted inside the Docker container.
+        .args(&["-v", &format!("{}/bin", dirs.cargo_mount_path())])
+        .args(&[
+            "-v",
+            &format!(
+                "{}:{}:Z,ro",
+                dirs.get_sysroot().to_utf8()?,
+                dirs.sysroot_mount_path()
+            ),
+        ]);
+
+    let path = subcommand_root(&dirs.toolchain, target)?;
+    file::create_dir_all(&path)?;
+    docker.args(&["-v", &format!("{}:{}:Z", path.to_utf8()?, path.as_posix_absolute()?)]);
+    docker.arg(&image.name);
+
+    let mut cmd = SafeCommand::new(&["cargo".to_owned()]);
+    cmd.args(&[
+        "install",
+        &format!("cargo-{command}"),
+        "--root",
+        &path.as_posix_absolute()?,
+        "--target",
+        target.triple(),
+    ]);
+
+    let cmd = format!(
+        "PATH=\"$PATH\":\"{}/bin\" {cmd:?}",
+        dirs.sysroot_mount_path(),
+    );
+    docker.args(&["sh", "-c", &cmd]);
     docker.run(msg_info, false).map_err(Into::into)
 }
 
@@ -475,8 +533,8 @@ pub fn parse_docker_opts(value: &str) -> Result<Vec<String>> {
     shell_words::split(value).wrap_err_with(|| format!("could not parse docker opts of {}", value))
 }
 
-pub(crate) fn cargo_safe_command(cargo_variant: CargoVariant) -> SafeCommand {
-    SafeCommand::new(cargo_variant.to_str())
+pub(crate) fn cargo_safe_command(args: &[String]) -> SafeCommand {
+    SafeCommand::new(args)
 }
 
 fn add_cargo_configuration_envvars(docker: &mut Command) {
@@ -558,12 +616,8 @@ pub(crate) fn docker_envvars(
     Ok(())
 }
 
-pub(crate) fn build_command(dirs: &Directories, cmd: &SafeCommand) -> String {
-    format!(
-        "PATH=\"$PATH\":\"{}/bin\" {:?}",
-        dirs.sysroot_mount_path(),
-        cmd
-    )
+pub(crate) fn build_command(path: &str, cmd: &SafeCommand) -> String {
+    format!("PATH=\"$PATH\":{path} {cmd:?}",)
 }
 
 fn mount_to_ignore_cargo_config(
@@ -980,6 +1034,17 @@ pub fn path_hash(path: &Path) -> Result<String> {
         .get(..5)
         .expect("sha1 is expected to be at least 5 characters long")
         .to_owned())
+}
+
+pub fn subcommand_root(toolchain: &QualifiedToolchain, target: &Target) -> Result<PathBuf> {
+    let toolchain_id = toolchain.unique_toolchain_identifier()?;
+    Ok(file::cargo_dir()?
+        .join(toolchain_id)
+        .join(target.triple()))
+}
+
+pub fn subcommand_directory(toolchain: &QualifiedToolchain, target: &Target) -> Result<PathBuf> {
+    Ok(subcommand_root(toolchain, target)?.join("bin"))
 }
 
 #[cfg(test)]
