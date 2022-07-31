@@ -16,12 +16,17 @@ main() {
     wget -nc https://dl.winehq.org/wine-builds/winehq.key
     mv winehq.key /usr/share/keyrings/winehq-archive.key
     wget -nc https://dl.winehq.org/wine-builds/ubuntu/dists/focal/winehq-focal.sources
+    mv /etc/apt/sources.list.d /etc/apt/sources.list.d.bak
+    mkdir -p /etc/apt/sources.list.d
     mv winehq-focal.sources /etc/apt/sources.list.d/
     apt-get update
     apt install --no-install-recommends --assume-yes \
         "winehq-stable=7.0.0.0~focal-1"
 
     purge_packages
+
+    rm -rf /etc/apt/sources.list.d
+    mv /etc/apt/sources.list.d.bak /etc/apt/sources.list.d
 }
 
 main "${@}"
