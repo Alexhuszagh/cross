@@ -982,6 +982,9 @@ pub(crate) fn run(
     if is_tty {
         docker.arg("-t");
     }
+    if io::Stdin::is_atty() {
+        docker.arg("-i");
+    }
 
     let mut image_name = options.image.name.clone();
 
