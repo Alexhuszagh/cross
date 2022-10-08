@@ -333,6 +333,8 @@ impl ToolchainDirectories {
         self.toolchain.unique_container_identifier(triple)
     }
 
+    // TODO(ahuszagh) Need `unique_project_identifier`, similar to as before.
+
     pub fn toolchain(&self) -> &QualifiedToolchain {
         &self.toolchain
     }

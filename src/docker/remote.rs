@@ -576,22 +576,28 @@ fn get_project_fingerprint(home: &Path, copy_cache: bool) -> Result<FingerprintM
     Ok(result)
 }
 
+// returns the to_copy (new + modified) and to_remove (modified + removed).
+// this is because `docker cp` does not overwrite recursively
+// https://github.com/cross-rs/cross/issues/1016
 fn get_fingerprint_difference<'a, 'b>(
     previous: &'a FingerprintMap,
     current: &'b FingerprintMap,
 ) -> (Vec<&'b str>, Vec<&'a str>) {
-    // this can be added or updated
-    let changed: Vec<&str> = current
+    // this can be added or modified
+    let to_copy: Vec<&str> = current
         .iter()
         .filter(|(k, v1)| previous.get(*k).map_or(true, |v2| v1 != &v2))
         .map(|(k, _)| k.as_str())
         .collect();
-    let removed: Vec<&str> = previous
+    println!("to_copy={to_copy:?}", ); // TODO(ahuszagh) Remove
+    // this can be added or modified
+    let to_remove: Vec<&str> = previous
         .iter()
-        .filter(|(k, _)| !current.contains_key(*k))
+        .filter(|(k, v1)| current.get(*k).map_or(true, |v2| v1 != &v2))
         .map(|(k, _)| k.as_str())
         .collect();
-    (changed, removed)
+    println!("to_remove={to_remove:?}", ); // TODO(ahuszagh) Remove
+    (to_copy, to_remove)
 }
 
 // copy files for a docker volume, for remote host support
@@ -680,18 +686,24 @@ fn copy_volume_container_project(
             file::create_dir_all(&parent)?;
             let fingerprint = parent.join(container);
             let current = get_project_fingerprint(src, copy_cache)?;
+            println!("within keep"); // TODO(ahuszagh) Remove
+            println!("previous exists?={fingerprint:?} {:?}", fingerprint.exists()); // TODO(ahuszagh) Remove
+            // TODO(ahuszagh) Oh this fails because of the system time now...
+            // Pain
+            println!("path exists?={:?}", container_path_exists(engine, container, dst, msg_info)?); // TODO(ahuszagh) Remove
             // need to check if the container path exists, otherwise we might
             // have stale data: the persistent volume was deleted & recreated.
             if fingerprint.exists() && container_path_exists(engine, container, dst, msg_info)? {
                 let previous = parse_project_fingerprint(&fingerprint)?;
-                let (changed, removed) = get_fingerprint_difference(&previous, &current);
+                let (to_copy, to_remove) = get_fingerprint_difference(&previous, &current);
                 write_project_fingerprint(&fingerprint, &current)?;
 
-                if !changed.is_empty() {
-                    copy_volume_file_list(engine, container, src, dst, &changed, msg_info)?;
+                // remove then copy, then `docker cp` does not overwrite recursively
+                if !to_remove.is_empty() {
+                    remove_volume_file_list(engine, container, dst, &to_remove, msg_info)?;
                 }
-                if !removed.is_empty() {
-                    remove_volume_file_list(engine, container, dst, &removed, msg_info)?;
+                if !to_copy.is_empty() {
+                    copy_volume_file_list(engine, container, src, dst, &to_copy, msg_info)?;
                 }
             } else {
                 write_project_fingerprint(&fingerprint, &current)?;
