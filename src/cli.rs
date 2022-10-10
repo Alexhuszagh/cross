@@ -13,7 +13,8 @@ pub struct Args {
     pub all: Vec<String>,
     pub subcommand: Option<Subcommand>,
     pub channel: Option<String>,
-    pub target: Option<Target>,
+    // need an option in case we get a trailing `--target`.
+    pub targets: Vec<Option<Target>>,
     pub features: Vec<String>,
     pub target_dir: Option<PathBuf>,
     pub manifest_path: Option<PathBuf>,
@@ -106,8 +107,11 @@ fn parse_next_arg<T>(
     parse: impl Fn(&str) -> Result<T>,
     store_cb: impl Fn(String) -> Result<String>,
     iter: &mut impl Iterator<Item = String>,
+    store: bool,
 ) -> Result<Option<T>> {
-    out.push(arg);
+    if store {
+        out.push(arg);
+    }
     match iter.next() {
         Some(next) => {
             let result = parse(&next)?;
@@ -123,6 +127,7 @@ fn parse_equal_arg<T>(
     out: &mut Vec<String>,
     parse: impl Fn(&str) -> Result<T>,
     store_cb: impl Fn(String) -> Result<String>,
+    store: bool,
 ) -> Result<T> {
     let (first, second) = arg.split_once('=').expect("argument should contain `=`");
     let result = parse(second)?;
@@ -158,7 +163,7 @@ fn store_target_dir(_: String) -> Result<String> {
 
 pub fn parse(target_list: &TargetList) -> Result<Args> {
     let mut channel = None;
-    let mut target = None;
+    let mut targets = Vec::new();
     let mut features = Vec::new();
     let mut manifest_path: Option<PathBuf> = None;
     let mut target_dir = None;
@@ -189,12 +194,12 @@ pub fn parse(target_list: &TargetList) -> Result<Args> {
             } else if let Some(kind) = is_value_arg(&arg, "--color") {
                 color = match kind {
                     ArgKind::Next => {
-                        match parse_next_arg(arg, &mut all, str_to_owned, identity, &mut args)? {
+                        match parse_next_arg(arg, &mut all, str_to_owned, identity, &mut args, true)? {
                             Some(c) => Some(c),
                             None => shell::invalid_color(None),
                         }
                     }
-                    ArgKind::Equal => Some(parse_equal_arg(arg, &mut all, str_to_owned, identity)?),
+                    ArgKind::Equal => Some(parse_equal_arg(arg, &mut all, str_to_owned, identity, true)?),
                 };
             } else if let Some(kind) = is_value_arg(&arg, "--manifest-path") {
                 manifest_path = match kind {
@@ -204,33 +209,36 @@ pub fn parse(target_list: &TargetList) -> Result<Args> {
                         parse_manifest_path,
                         store_manifest_path,
                         &mut args,
+                        true,
                     )?
                     .flatten(),
                     ArgKind::Equal => {
-                        parse_equal_arg(arg, &mut all, parse_manifest_path, store_manifest_path)?
+                        parse_equal_arg(arg, &mut all, parse_manifest_path, store_manifest_path, true)?
                     }
                 };
             } else if let ("+", ch) = arg.split_at(1) {
                 channel = Some(ch.to_owned());
             } else if let Some(kind) = is_value_arg(&arg, "--target") {
                 let parse_target = |t: &str| Ok(Target::from(t, target_list));
-                target = match kind {
+                match kind {
                     ArgKind::Next => {
-                        parse_next_arg(arg, &mut all, parse_target, identity, &mut args)?
+                        targets.push(parse_next_arg(arg, &mut all, parse_target, identity, &mut args, false)?);
                     }
-                    ArgKind::Equal => Some(parse_equal_arg(arg, &mut all, parse_target, identity)?),
+                    ArgKind::Equal => {
+                        targets.push(Some(parse_equal_arg(arg, &mut all, parse_target, identity, false)?));
+                    }
                 };
             } else if let Some(kind) = is_value_arg(&arg, "--features") {
                 match kind {
                     ArgKind::Next => {
                         let next =
-                            parse_next_arg(arg, &mut all, str_to_owned, identity, &mut args)?;
+                            parse_next_arg(arg, &mut all, str_to_owned, identity, &mut args, true)?;
                         if let Some(feature) = next {
                             features.push(feature);
                         }
                     }
                     ArgKind::Equal => {
-                        features.push(parse_equal_arg(arg, &mut all, str_to_owned, identity)?);
+                        features.push(parse_equal_arg(arg, &mut all, str_to_owned, identity, true)?);
                     }
                 }
             } else if let Some(kind) = is_value_arg(&arg, "--target-dir") {
@@ -242,6 +250,7 @@ pub fn parse(target_list: &TargetList) -> Result<Args> {
                             parse_target_dir,
                             store_target_dir,
                             &mut args,
+                            true,
                         )?;
                     }
                     ArgKind::Equal => {
@@ -250,6 +259,7 @@ pub fn parse(target_list: &TargetList) -> Result<Args> {
                             &mut all,
                             parse_target_dir,
                             store_target_dir,
+                            true,
                         )?);
                     }
                 }
@@ -267,7 +277,7 @@ pub fn parse(target_list: &TargetList) -> Result<Args> {
         all,
         subcommand: sc,
         channel,
-        target,
+        targets,
         features,
         target_dir,
         manifest_path,

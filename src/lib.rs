@@ -169,6 +169,10 @@ impl TargetTriple {
     /// Checks if this `(host, target)` pair is supported by `cross`
     ///
     /// `target == None` means `target == host`
+
+    // TODO(ahuszagh) Should allow an option I guess?
+    // If we have a list that's empty, we should have the option
+    // Otherwise, we need each target separately I guess.
     fn is_supported(&self, target: Option<&Target>) -> bool {
         match std::env::var("CROSS_COMPATIBILITY_VERSION")
             .as_ref()
@@ -515,6 +519,7 @@ pub fn run(
         let host = host_version_meta.host();
         let toml = toml(&metadata, msg_info)?;
         let config = Config::new(toml);
+        // TODO(ahuszagh) Needs to be targets.
         let target = args
             .target
             .or_else(|| config.target(&target_list))
