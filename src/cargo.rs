@@ -143,8 +143,10 @@ pub fn cargo_metadata_with_args(
     } else {
         command.arg("--no-deps");
     }
-    if let Some(target) = args.and_then(|a| a.target.as_ref()) {
-        command.args(["--filter-platform", target.triple()]);
+    if let Some(targets) = args.map(|a| &a.targets) {
+        for target in targets {
+            command.args(["--filter-platform", target.triple()]);
+        }
     }
     if let Some(features) = args.map(|a| &a.features).filter(|v| !v.is_empty()) {
         command.args([String::from("--features"), features.join(",")]);

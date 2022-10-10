@@ -519,9 +519,13 @@ pub fn run(
         let host = host_version_meta.host();
         let toml = toml(&metadata, msg_info)?;
         let config = Config::new(toml);
+        // TODO(ahuszagh) Change to target...
+        // Probably need to iterate over all targets.
         // TODO(ahuszagh) Needs to be targets.
         let target = args
-            .target
+            .targets
+            .get(0) // TODO(ahuszagh) Remove this
+            .cloned() // TODO(ahuszagh) Remove this
             .or_else(|| config.target(&target_list))
             .unwrap_or_else(|| Target::from(host.triple(), &target_list));
         config.confusable_target(&target, msg_info)?;

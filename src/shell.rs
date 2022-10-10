@@ -395,6 +395,10 @@ pub fn invalid_color(provided: Option<&str>) -> ! {
     MessageInfo::default().fatal_usage("--color <WHEN>", provided, Some(&possible), 1);
 }
 
+pub fn invalid_target() -> ! {
+    MessageInfo::default().fatal_usage("--color <WHEN>", None, None, 1);
+}
+
 fn get_color_choice(color: Option<&str>) -> Result<ColorChoice> {
     Ok(match color {
         Some(arg) => arg.parse().unwrap_or_else(|_| invalid_color(color)),

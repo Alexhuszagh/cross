@@ -13,8 +13,7 @@ pub struct Args {
     pub all: Vec<String>,
     pub subcommand: Option<Subcommand>,
     pub channel: Option<String>,
-    // need an option in case we get a trailing `--target`.
-    pub targets: Vec<Option<Target>>,
+    pub targets: Vec<Target>,
     pub features: Vec<String>,
     pub target_dir: Option<PathBuf>,
     pub manifest_path: Option<PathBuf>,
@@ -115,7 +114,9 @@ fn parse_next_arg<T>(
     match iter.next() {
         Some(next) => {
             let result = parse(&next)?;
-            out.push(store_cb(next)?);
+            if store {
+                out.push(store_cb(next)?);
+            }
             Ok(Some(result))
         }
         None => Ok(None),
@@ -131,7 +132,9 @@ fn parse_equal_arg<T>(
 ) -> Result<T> {
     let (first, second) = arg.split_once('=').expect("argument should contain `=`");
     let result = parse(second)?;
-    out.push(format!("{first}={}", store_cb(second.to_owned())?));
+    if store {
+        out.push(format!("{first}={}", store_cb(second.to_owned())?));
+    }
 
     Ok(result)
 }
@@ -222,10 +225,14 @@ pub fn parse(target_list: &TargetList) -> Result<Args> {
                 let parse_target = |t: &str| Ok(Target::from(t, target_list));
                 match kind {
                     ArgKind::Next => {
-                        targets.push(parse_next_arg(arg, &mut all, parse_target, identity, &mut args, false)?);
+                        let next = parse_next_arg(arg, &mut all, parse_target, identity, &mut args, false)?;
+                        match next {
+                            Some(target) => targets.push(target),
+                            None => shell::invalid_target(),
+                        }
                     }
                     ArgKind::Equal => {
-                        targets.push(Some(parse_equal_arg(arg, &mut all, parse_target, identity, false)?));
+                        targets.push(parse_equal_arg(arg, &mut all, parse_target, identity, false)?);
                     }
                 };
             } else if let Some(kind) = is_value_arg(&arg, "--features") {
