@@ -11,6 +11,24 @@ pub(crate) fn run(message: String, author: String) -> Result<(), color_eyre::Rep
     let mut matrix: Vec<CiTarget> = get_matrix().clone();
     let (prs, mut app) = if author == "bors[bot]" {
         process_bors_message(&message)?
+    } else if author == "[gha]" {
+        let app = TargetMatrixArgs {
+            target: std::env::var("TARGETS")
+                .unwrap_or_default()
+                .split(' ')
+                .flat_map(|s| s.split(','))
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_owned())
+                .collect(),
+            std: None,
+            cpp: None,
+            dylib: None,
+            run: None,
+            runners: vec![],
+            none: false,
+            has_image: true,
+        };
+        (vec![], app)
     } else {
         (vec![], TargetMatrixArgs::default())
     };
@@ -146,6 +164,8 @@ struct TargetMatrixArgs {
     runners: Vec<String>,
     #[clap(long)]
     none: bool,
+    #[clap(long)]
+    has_image: bool,
 }
 
 impl TargetMatrixArgs {
@@ -157,6 +177,9 @@ impl TargetMatrixArgs {
             gha_print("Running no targets.");
             std::mem::take(matrix);
             return;
+        }
+        if self.has_image {
+            matrix.retain(|t| t.to_image_target().has_ci_image());
         }
         if !self.target.is_empty() {
             matrix.retain(|m| {
