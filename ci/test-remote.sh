@@ -44,10 +44,12 @@ cross_test_cpp() {
     git clone --depth 1 https://github.com/cross-rs/rust-cpp-hello-word "${td}"
 
     pushd "${td}"
+    # test remote builds
     retry cargo fetch
     "${CROSS}" run --target "${TARGET}" | grep "Hello, world!"
     sed -i 's/Hello, world/Hello, test/g' hellopp.cc
     "${CROSS}" run --target "${TARGET}" | grep "Hello, test!"
+    # ensure they're copied back to our host
     popd
 
     rm -rf "${td}"
