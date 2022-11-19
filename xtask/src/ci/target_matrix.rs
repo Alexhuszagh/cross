@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::{get_matrix, gha_output, gha_print, CiTarget, ImageTarget};
 
-pub(crate) fn run(message: String, author: String) -> Result<(), color_eyre::Report> {
+pub(crate) fn run(message: String, author: String, weekly: bool) -> Result<(), color_eyre::Report> {
     let mut matrix: Vec<CiTarget> = get_matrix().clone();
     let (prs, mut app) = if author == "bors[bot]" {
         process_bors_message(&message)?
-    } else if author == "[gha]" {
+    } else if weekly {
         let app = TargetMatrixArgs {
             target: std::env::var("TARGETS")
                 .unwrap_or_default()
