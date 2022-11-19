@@ -26,7 +26,6 @@ pub(crate) fn run(message: String, author: String, weekly: bool) -> Result<(), c
             run: None,
             runners: vec![],
             none: false,
-            has_image: true,
         };
         (vec![], app)
     } else {
@@ -164,8 +163,6 @@ struct TargetMatrixArgs {
     runners: Vec<String>,
     #[clap(long)]
     none: bool,
-    #[clap(long)]
-    has_image: bool,
 }
 
 impl TargetMatrixArgs {
@@ -177,9 +174,6 @@ impl TargetMatrixArgs {
             gha_print("Running no targets.");
             std::mem::take(matrix);
             return;
-        }
-        if self.has_image {
-            matrix.retain(|t| t.to_image_target().has_ci_image());
         }
         if !self.target.is_empty() {
             matrix.retain(|m| {
