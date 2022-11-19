@@ -1,7 +1,6 @@
 mod target_matrix;
 
 use crate::util::gha_output;
-use clap::builder::BoolishValueParser;
 use clap::Subcommand;
 use cross::shell::Verbosity;
 use cross::{cargo_command, CargoMetadata, CommandExt};
@@ -33,8 +32,8 @@ pub enum CiJob {
         #[clap(long, env = "COMMIT_AUTHOR")]
         author: String,
         // if the check is being run as part of a weekly check
-        #[clap(long, env = "WEEKLY_CI", value_parser = BoolishValueParser::new())]
-        weekly: Option<bool>,
+        #[clap(long, env = "WEEKLY_CI")]
+        weekly: bool,
     },
 }
 
@@ -123,7 +122,7 @@ pub fn ci(args: CiJob, metadata: CargoMetadata) -> cross::Result<()> {
             author,
             weekly,
         } => {
-            target_matrix::run(message, author, weekly.unwrap_or_default())?;
+            target_matrix::run(message, author, weekly)?;
         }
     }
     Ok(())
